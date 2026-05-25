@@ -45,10 +45,22 @@
                 </el-table-column>
                 <el-table-column min-width="100" prop="applicant" label="申请人" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="100" prop="application_type_display" label="License类型" show-overflow-tooltip></el-table-column>
-                <el-table-column min-width="150" prop="feature" label="Feature" show-overflow-tooltip></el-table-column>
+                <el-table-column min-width="200" prop="feature" label="Feature" align="left">
+                    <template #default="scope">
+                        <pre v-if="scope.row.feature && Array.isArray(scope.row.feature)" style="margin: 0; font-size: 12px; line-height: 1.5;">{{ scope.row.feature.join('\n') }}</pre>
+                        <pre v-else-if="scope.row.feature && typeof scope.row.feature === 'object'" style="margin: 0; font-size: 12px; line-height: 1.5;">{{ JSON.stringify(scope.row.feature, null, 2) }}</pre>
+                        <span v-else>{{ scope.row.feature }}</span>
+                    </template>
+                </el-table-column>
+                <el-table-column min-width="150" prop="keyword" label="关键字" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="120" prop="customer_name" label="客户名称" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="150" prop="mac_address" label="MAC Address/HostID" show-overflow-tooltip></el-table-column>
-                <el-table-column min-width="100" prop="quantity" label="授权数量" align="center"></el-table-column>
+                <el-table-column min-width="200" prop="quantity" label="授权数量" align="left">
+                    <template #default="scope">
+                        <pre v-if="scope.row.quantity && typeof scope.row.quantity === 'object'" style="margin: 0; font-size: 12px; line-height: 1.5;">{{ JSON.stringify(scope.row.quantity, null, 2) }}</pre>
+                        <span v-else>{{ scope.row.quantity }}</span>
+                    </template>
+                </el-table-column>
                 <el-table-column min-width="150" prop="start_time" label="开始时间"></el-table-column>
                 <el-table-column min-width="150" prop="end_time" label="结束时间"></el-table-column>
                 <el-table-column min-width="100" label="状态">
@@ -78,7 +90,7 @@
                     </template>
                     <template #default="scope">
                         <span class="table-operate-btn" @click="handleEdit(scope.row, 'edit')" v-show="hasPermission(this.$route.name,'Update')">编辑</span>
-                        <span class="table-operate-btn" @click="handleGenerate(scope.row)" v-show="hasPermission(this.$route.name,'Generate') && (scope.row.status==0 || scope.row.status==3)">制作License</span>
+                        <span class="table-operate-btn" @click="handleGenerate(scope.row)" v-show="hasPermission(this.$route.name,'Generate') && (scope.row.status==3)">制作License</span>
                         <span class="table-operate-btn" @click="handleRetry(scope.row)" v-show="hasPermission(this.$route.name,'Retry') && scope.row.status==0 && scope.row.retry_count < (scope.row.max_retry_count || 3)">重试</span>
                         <span class="table-operate-btn" @click="handleViewDetail(scope.row)" v-show="hasPermission(this.$route.name,'Retrieve')">详情</span>
                         <span class="table-operate-btn" @click="handleDelete(scope.row)" v-show="hasPermission(this.$route.name,'Delete')">删除</span>
@@ -95,10 +107,18 @@
             <el-descriptions :column="2" border v-if="currentRow">
                 <el-descriptions-item label="申请人">{{ currentRow.applicant }}</el-descriptions-item>
                 <el-descriptions-item label="License类型">{{ currentRow.application_type_display }}</el-descriptions-item>
-                <el-descriptions-item label="Feature" :span="2">{{ currentRow.feature }}</el-descriptions-item>
+                <el-descriptions-item label="Feature" :span="2">
+                    <pre v-if="currentRow.feature && Array.isArray(currentRow.feature)" style="margin: 0; font-size: 13px; line-height: 1.6; background: #f5f7fa; padding: 10px; border-radius: 4px;">{{ currentRow.feature.join('\n') }}</pre>
+                    <pre v-else-if="currentRow.feature && typeof currentRow.feature === 'object'" style="margin: 0; font-size: 13px; line-height: 1.6; background: #f5f7fa; padding: 10px; border-radius: 4px;">{{ JSON.stringify(currentRow.feature, null, 2) }}</pre>
+                    <span v-else>{{ currentRow.feature }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="关键字">{{ currentRow.keyword }}</el-descriptions-item>
                 <el-descriptions-item label="客户名称">{{ currentRow.customer_name }}</el-descriptions-item>
                 <el-descriptions-item label="MAC Address">{{ currentRow.mac_address }}</el-descriptions-item>
-                <el-descriptions-item label="授权数量">{{ currentRow.quantity }}</el-descriptions-item>
+                <el-descriptions-item label="授权数量" :span="2">
+                    <pre v-if="currentRow.quantity && typeof currentRow.quantity === 'object'" style="margin: 0; font-size: 13px; line-height: 1.6; background: #f5f7fa; padding: 10px; border-radius: 4px;">{{ JSON.stringify(currentRow.quantity, null, 2) }}</pre>
+                    <span v-else>{{ currentRow.quantity }}</span>
+                </el-descriptions-item>
                 <el-descriptions-item label="状态">{{ currentRow.status_display }}</el-descriptions-item>
                 <el-descriptions-item label="开始时间">{{ currentRow.start_time }}</el-descriptions-item>
                 <el-descriptions-item label="结束时间">{{ currentRow.end_time }}</el-descriptions-item>
@@ -112,7 +132,7 @@
         </el-dialog>
 
         <!-- 新增/编辑对话框 -->
-        <el-dialog v-model="dialogVisible" :title="dialogType === 'add' ? '新增申请' : '编辑申请'" width="700px">
+        <el-dialog v-model="dialogVisible" :title="dialogType === 'add' ? '新增申请' : '编辑申请'" width="700px" @close="handleDialogClose">
             <el-form :model="form" :rules="rules" ref="formRef" label-width="120px">
                 <el-row :gutter="20">
                     <el-col :span="12">
@@ -146,23 +166,49 @@
                 </el-form-item>
                 <el-row :gutter="20">
                     <el-col :span="12">
-                        <el-form-item label="开始时间" prop="start_time">
-                            <el-date-picker v-model="form.start_time" type="datetime" placeholder="选择开始时间" style="width: 100%" value-format="YYYY-MM-DD HH:mm:ss"></el-date-picker>
+                        <el-form-item label="关键字" prop="keyword">
+                            <el-input v-model="form.keyword" placeholder="用于匹配映射表中的selectField字段" clearable></el-input>
                         </el-form-item>
                     </el-col>
                     <el-col :span="12">
-                        <el-form-item label="结束时间" prop="end_time">
-                            <el-date-picker v-model="form.end_time" type="datetime" placeholder="选择结束时间" style="width: 100%" value-format="YYYY-MM-DD HH:mm:ss"></el-date-picker>
+                        <el-form-item label="开始时间" prop="start_time">
+                            <el-date-picker 
+                                v-model="form.start_time" 
+                                type="date" 
+                                placeholder="选择开始时间" 
+                                style="width: 100%" 
+                                value-format="YYYY-MM-DD"
+                                :disabled-date="disabledStartDate">
+                            </el-date-picker>
                         </el-form-item>
                     </el-col>
                 </el-row>
                 <el-row :gutter="20">
                     <el-col :span="12">
-                        <el-form-item label="授权数量" prop="quantity">
-                            <el-input-number v-model="form.quantity" :min="1" :max="9999" style="width: 100%"></el-input-number>
+                        <el-form-item label="结束时间" prop="end_time">
+                            <el-date-picker 
+                                v-model="form.end_time" 
+                                type="date" 
+                                placeholder="选择结束时间" 
+                                style="width: 100%" 
+                                value-format="YYYY-MM-DD"
+                                :disabled-date="disabledEndDate">
+                            </el-date-picker>
                         </el-form-item>
                     </el-col>
                 </el-row>
+                <el-form-item label="授权数量" prop="quantity">
+                    <el-input 
+                        v-model="form.quantity" 
+                        type="textarea" 
+                        :rows="8" 
+                        placeholder='请输入 JSON 格式，例如：{"GloryEX": 10, "GloryEX_Basic": 5}'
+                        style="font-family: monospace; font-size: 13px;"
+                    ></el-input>
+                    <div style="color: #909399; font-size: 12px; margin-top: 5px;">
+                        <i class="el-icon-info"></i> 提示：使用 JSON 格式，每个 Feature 对应一个数量
+                    </div>
+                </el-form-item>
             </el-form>
             <template #footer>
                 <el-button @click="dialogVisible = false">取消</el-button>
@@ -199,6 +245,7 @@
                     applicant_id: '',
                     application_type: '',
                     feature: '',
+                    keyword: '',
                     customer_name: '',
                     mac_address: '',
                     start_time: '',
@@ -251,6 +298,52 @@
             setFull(){
                 this.isFull=!this.isFull
                 window.dispatchEvent(new Event('resize'))
+            },
+            // 对话框关闭时清除表单缓存
+            handleDialogClose() {
+                // 重置表单数据和验证状态
+                this.form = {
+                    id: '',
+                    applicant: '',
+                    applicant_id: '',
+                    application_type: '',
+                    feature: '',
+                    keyword: '',
+                    customer_name: '',
+                    mac_address: '',
+                    start_time: '',
+                    end_time: '',
+                    quantity: '',
+                    status: 3,
+                    max_retry_count: 3
+                }
+                // 清除表单验证
+                this.$nextTick(() => {
+                    if (this.$refs.formRef) {
+                        this.$refs.formRef.resetFields()
+                        this.$refs.formRef.clearValidate()
+                    }
+                })
+            },
+            // 禁用开始日期：不能选择结束日期之后的日期
+            disabledStartDate(time) {
+                if (this.form.end_time) {
+                    const endDate = new Date(this.form.end_time)
+                    // 结束日期的 00:00:00
+                    endDate.setHours(0, 0, 0, 0)
+                    return time.getTime() > endDate.getTime()
+                }
+                return false
+            },
+            // 禁用结束日期：不能选择开始日期之前的日期
+            disabledEndDate(time) {
+                if (this.form.start_time) {
+                    const startDate = new Date(this.form.start_time)
+                    // 开始日期的 00:00:00
+                    startDate.setHours(0, 0, 0, 0)
+                    return time.getTime() < startDate.getTime()
+                }
+                return false
             },
             handleGenerate(row) {
                 let vm = this
@@ -351,42 +444,60 @@
                     }
                     this.getData()
                 } else if(flag === 'add') {
-                    // 新增
-                    this.dialogType = 'add'
+                    // 新增 - 先关闭对话框清除缓存
+                    this.dialogVisible = false
+                    // 重置表单数据
                     this.form = {
                         id: '',
                         applicant: '',
                         applicant_id: '',
                         application_type: '',
                         feature: '',
+                        keyword: '',
                         customer_name: '',
                         mac_address: '',
                         start_time: '',
                         end_time: '',
-                        quantity: 1,
+                        quantity: '',
                         status: 3,
                         max_retry_count: 3
                     }
+                    // 打开对话框
+                    this.dialogType = 'add'
                     this.dialogVisible = true
+                    // 清除表单验证和缓存
                     this.$nextTick(() => {
                         if (this.$refs.formRef) {
+                            this.$refs.formRef.resetFields()
                             this.$refs.formRef.clearValidate()
                         }
                     })
                 } else if(flag === 'edit') {
                     // 编辑
                     this.dialogType = 'edit'
+                    // 将 quantity 对象转换为 JSON 字符串
+                    let quantityValue = row.quantity
+                    if (quantityValue && typeof quantityValue === 'object') {
+                        quantityValue = JSON.stringify(quantityValue, null, 2)
+                    }
+                    // 将 feature 数组转换为逗号分隔的字符串
+                    let featureValue = row.feature
+                    if (featureValue && Array.isArray(featureValue)) {
+                        featureValue = featureValue.join(', ')
+                    }
+                    
                     this.form = {
                         id: row.id,
                         applicant: row.applicant,
                         applicant_id: row.applicant_id || '',
                         application_type: row.application_type,
-                        feature: row.feature,
+                        feature: featureValue,
+                        keyword: row.keyword || '',
                         customer_name: row.customer_name,
                         mac_address: row.mac_address,
-                        start_time: row.start_time,
-                        end_time: row.end_time,
-                        quantity: row.quantity,
+                        start_time: row.start_time || '',
+                        end_time: row.end_time || '',
+                        quantity: quantityValue,
                         status: row.status,
                         max_retry_count: row.max_retry_count || 3
                     }
@@ -404,8 +515,29 @@
                 this.$refs.formRef.validate((valid) => {
                     if (valid) {
                         this.submitLoading = true
+                        
+                        // 准备提交的数据
+                        const submitData = {...this.form}
+                        
+                        // 将 quantity 的 JSON 字符串转换为对象
+                        if (submitData.quantity && typeof submitData.quantity === 'string') {
+                            try {
+                                submitData.quantity = JSON.parse(submitData.quantity)
+                            } catch (e) {
+                                this.submitLoading = false
+                                this.$message.error('授权数量格式错误，请输入有效的 JSON 格式')
+                                return
+                            }
+                        }
+                        
+                        // 将 feature 字符串转换为数组
+                        if (submitData.feature && typeof submitData.feature === 'string') {
+                            // 按逗号分隔，去除空白字符
+                            submitData.feature = submitData.feature.split(',').map(f => f.trim()).filter(f => f)
+                        }
+                        
                         const api = this.dialogType === 'add' ? licenseApplicationAdd : licenseApplicationEdit
-                        api(this.form).then(res => {
+                        api(submitData).then(res => {
                             this.submitLoading = false
                             if(res.code === 2000) {
                                 this.$message.success(this.dialogType === 'add' ? '新增成功' : '编辑成功')

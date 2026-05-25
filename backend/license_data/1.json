@@ -1,0 +1,38 @@
+{
+  "radioField_mmkh8lcs_id": "试用",
+  "tableField_mdy73q6i": [
+    {
+      "selectField_mdy73q6j_id": "GloryEX",
+      "textField_mdy73q6m": "22",
+      "textField_mdy73q6l": "12",
+      "dateField_mdy73q6p": 1779292800000,
+      "dateField_mdy73q6o": 1779120000000,
+      "selectField_mdy73q6j": "GloryEX"
+    }
+  ],
+  "departmentSelectField_me87gr4u": [
+    "信息技术部"
+  ],
+  "radioField_mmkh8lcs": "试用",
+  "departmentSelectField_me87gr4u_id": [
+    "936526138"
+  ],
+  "radioField_me87gr58": "是",
+  "serialNumberField_me87gr49": "XXRSCXSX01-2026095",
+  "employeeField_me87gr4t": [
+    "夏于皓"
+  ],
+  "employeeField_me87gr4t_id": [
+    "xiayuhao"
+  ],
+  "textField_me87gr4w": "申请理由",
+  "textField_me87gr4o": "2",
+  "textField_me87gr51": "申请理由",
+  "radioField_me87gr58_id": "是",
+  "dateField_me87gr4v": 1779206400000,
+  "features": [
+    "12121",
+    "12",
+    "21"
+  ]
+}

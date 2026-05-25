@@ -50,7 +50,6 @@ function ajax(opt,method){
         }
       }
 
-      method==="PUT"&&(config.params=params);
       return new Promise((resolve,reject)=>{
           request({
                 url: config.url,
@@ -136,6 +135,7 @@ function ajax(opt,method){
       }
       method==="GET"&&(config1.params=params);
       method==="POST"&&(config1.data=params);
+      method==="PUT"&&(config1.data=params);
       method==="PATCH"&&(config1.data=params);
       return new Promise((resolve,reject)=>{
           request(config1).then(res=>{

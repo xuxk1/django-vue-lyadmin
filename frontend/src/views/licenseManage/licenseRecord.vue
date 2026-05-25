@@ -106,8 +106,8 @@
                 <el-table-column min-width="80" prop="version" label="Version" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="150" prop="host_id" label="HostID" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="100" prop="quantity" label="授权数量" align="center"></el-table-column>
-                <el-table-column min-width="150" prop="start_time" label="开始时间"></el-table-column>
-                <el-table-column min-width="150" prop="end_time" label="过期时间"></el-table-column>
+                <el-table-column min-width="150" prop="start_date_str" label="开始时间"></el-table-column>
+                <el-table-column min-width="150" prop="end_date_str" label="过期时间"></el-table-column>
                 <el-table-column min-width="100" prop="remaining_days" label="剩余天数" align="center">
                     <template #default="scope">
                         <el-tag v-if="scope.row.remaining_days > 30" type="success">{{ scope.row.remaining_days }}天</el-tag>
@@ -158,8 +158,8 @@
                 <el-descriptions-item label="Version">{{ currentRow.version }}</el-descriptions-item>
                 <el-descriptions-item label="HostID">{{ currentRow.host_id }}</el-descriptions-item>
                 <el-descriptions-item label="授权数量">{{ currentRow.quantity }}</el-descriptions-item>
-                <el-descriptions-item label="开始时间">{{ currentRow.start_time }}</el-descriptions-item>
-                <el-descriptions-item label="过期时间">{{ currentRow.end_time }}</el-descriptions-item>
+                <el-descriptions-item label="开始时间">{{ currentRow.start_date_str }}</el-descriptions-item>
+                <el-descriptions-item label="过期时间">{{ currentRow.end_date_str }}</el-descriptions-item>
                 <el-descriptions-item label="剩余天数">
                     <el-tag v-if="currentRow.remaining_days > 30" type="success">{{ currentRow.remaining_days }}天</el-tag>
                     <el-tag v-else-if="currentRow.remaining_days > 0" type="warning">{{ currentRow.remaining_days }}天</el-tag>

@@ -1,0 +1,52 @@
+{
+  "radioField_mmkh8lcs_id": "试用",
+  "UserInfo": [
+    {
+      "selectField_mdy73q6j_id": "GloryEX",
+      "textField_mdy73q6m": "22",
+      "textField_mdy73q6l": "12",
+      "dateField_mdy73q6p": 1779292800000,
+      "dateField_mdy73q6o": 1779120000000,
+      "selectField_mdy73q6j": "GloryEX"
+    }
+  ],
+  "Department": [
+    "信息技术部"
+  ],
+  "radioField_mmkh8lcs": "试用",
+  "departmentSelectField_me87gr4u_id": [
+    "936526138"
+  ],
+  "radioField_me87gr58": "是",
+  "numberField_mdy73qew": 21,
+  "GloryEX": 21,
+  "GloryEX-RC-NETLIST": 21,
+  "GloryEX-RC-DB": 21,
+  "GloryEX-R-NETLIST": 21,
+  "GloryEX-RC": 21,
+  "GloryEX-SNA": 21,
+  "GloryEX-CAPTAB": 21,
+  "GloryEX-HIEREXT": 21,
+  "SerialNumber": "XXRSCXSX01-2026095",
+  "Applicant": [
+    "夏于皓"
+  ],
+  "ApplicantID": [
+    "xiayuhao"
+  ],
+  "ReasonsApplication": "申请理由",
+  "numberField_mj2hbixf": 12121,
+  "GloryEX-ADVANCED-MODELING-SN10": 12,
+  "GloryEX-ADVANCED-MODEL-SN10": 12,
+  "GloryEX-ADVANCED-NODE-SN10": 12,
+  "numberField_mj2hbixb": 12,
+  "GloryEX-ADVANCED-MODEL-SN10E": 12121,
+  "textField_me87gr4o": "2",
+  "GloryEX-ADVANCED-NODE-SN10E": 12121,
+  "CustomerName": "申请理由",
+  "GloryEX-R": 21,
+  "radioField_me87gr58_id": "是",
+  "numberField_me87gr53": 12,
+  "ApplicationDate": 1779206400000,
+  "GloryEX-ADVANCED-NODE-SN10-PRO": 12
+}

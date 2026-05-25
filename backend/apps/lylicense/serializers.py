@@ -21,7 +21,8 @@ class LicenseApplicationSerializer(CustomModelSerializer):
         read_only_fields = ["id"]
         fields = [
             'id', 'applicant', 'applicant_id', 'application_type', 'feature',
-            'customer_name', 'mac_address', 'start_time', 'end_time', 'quantity',
+            'product', 'serial_number', 'keyword', 'customer_name', 'mac_address', 'hostname',
+            'start_time', 'end_time', 'quantity',
             'json_data', 'status', 'fail_reason', 'retry_count', 'max_retry_count',
             'application_type_display', 'status_display',
             'create_datetime', 'update_datetime'
@@ -44,7 +45,8 @@ class LicenseApplicationCreateSerializer(CustomModelSerializer):
         read_only_fields = ["id"]
         fields = [
             'id', 'applicant', 'applicant_id', 'application_type', 'feature',
-            'customer_name', 'mac_address', 'start_time', 'end_time', 'quantity',
+            'product', 'serial_number', 'keyword', 'customer_name', 'mac_address', 'hostname',
+            'start_time', 'end_time', 'quantity',
             'json_data', 'status', 'fail_reason', 'retry_count', 'max_retry_count',
             'create_datetime', 'update_datetime'
         ]
@@ -86,8 +88,8 @@ class LicenseRecordSerializer(CustomModelSerializer):
         fields = [
             'id', 'application', 'license_id', 'license_type', 'file_name',
             'file_relative_path', 'directory', 'full_path', 'feature', 'vendor',
-            'version', 'host_id', 'start_time', 'end_time', 'remaining_days',
-            'quantity', 'status', 'extra_info',
+            'version', 'host_id', 'start_time', 'end_time', 'start_date_str', 'end_date_str',
+            'remaining_days', 'quantity', 'status', 'extra_info',
             'license_type_display', 'status_display', 'application_info',
             'create_datetime', 'update_datetime'
         ]
@@ -130,7 +132,7 @@ class LicenseFieldMappingSerializer(CustomModelSerializer):
         model = LicenseFieldMapping
         read_only_fields = ["id"]
         fields = [
-            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 
+            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 'remark',
             'is_deleted', 'license_type_name', 'user_type_name', 'field_type_name',
             'create_datetime', 'update_datetime',
             'creator', 'creator_name'
@@ -149,14 +151,33 @@ class LicenseFieldMappingCreateSerializer(CustomModelSerializer):
     """
     License字段映射-新增序列化器
     """
+    def validate(self, attrs):
+        """验证字段唯一性"""
+        license_type = attrs.get('license_type')
+        user_type = attrs.get('user_type')
+        field = attrs.get('field')
+        
+        # 检查是否存在相同的 license_type + user_type + field 组合
+        if LicenseFieldMapping.objects.filter(
+            license_type=license_type,
+            user_type=user_type,
+            field=field,
+            is_deleted=False
+        ).exists():
+            raise serializers.ValidationError(
+                f'字段名 "{field}" 在 {license_type} - {user_type} 类型中已存在，请勿重复添加！'
+            )
+        
+        return attrs
+    
     class Meta:
         model = LicenseFieldMapping
         read_only_fields = ["id"]
         fields = [
-            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 
+            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 'remark',
             'is_deleted',
             'create_datetime', 'update_datetime',
-            'creator', 'dept_belong_id', 'description'
+            'creator', 'description'
         ]
         extra_kwargs = {
             'license_type': {'required': True},
@@ -176,10 +197,10 @@ class LicenseFieldMappingUpdateSerializer(CustomModelSerializer):
         model = LicenseFieldMapping
         read_only_fields = ["id"]
         fields = [
-            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 
+            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 'remark',
             'is_deleted',
             'create_datetime', 'update_datetime',
-            'creator', 'dept_belong_id', 'description'
+            'creator', 'description'
         ]
         extra_kwargs = {
             'license_type': {'required': True},

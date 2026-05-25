@@ -47,6 +47,7 @@
                 <el-table-column min-width="150" prop="field" label="原始字段名" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="200" prop="name" label="字段含义" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="150" prop="real_key" label="映射后的真实key" show-overflow-tooltip></el-table-column>
+                <el-table-column min-width="150" prop="remark" label="备注" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="100" prop="creator_name" label="创建人" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="100" label="状态" align="center">
                     <template #default="scope">
@@ -113,6 +114,9 @@
                 </el-form-item>
                 <el-form-item label="映射后的key" prop="real_key">
                     <el-input v-model="form.real_key" placeholder="请输入映射后的真实key" maxlength="100"></el-input>
+                </el-form-item>
+                <el-form-item label="备注" prop="remark">
+                    <el-input v-model="form.remark" type="textarea" :rows="3" placeholder="请输入备注信息" maxlength="500"></el-input>
                 </el-form-item>
                 <el-form-item label="是否废弃" prop="is_deleted">
                     <el-switch v-model="form.is_deleted" :active-value="true" :inactive-value="false"></el-switch>
@@ -244,6 +248,7 @@
                         field: '',
                         name: '',
                         real_key: '',
+                        remark: '',
                         is_deleted: false
                     }
                     this.dialogVisible = true
@@ -262,6 +267,7 @@
                         field: row.field,
                         name: row.name,
                         real_key: row.real_key,
+                        remark: row.remark || '',
                         is_deleted: row.is_deleted
                     }
                     this.dialogVisible = true

@@ -25,17 +25,45 @@ BASE_DIR = settings.BASE_DIR
 MEDIA_ROOT = settings.MEDIA_ROOT
 
 
-def transform_json_with_mapping(raw_json, license_type, user_type='internal'):
+def transform_json_with_mapping(raw_json, license_type, user_type='external'):
     """
     使用字段映射表转换JSON数据
     
+    处理流程：
+    1. 遍历原始 JSON FormList 中的所有字段
+    2. 忽略 checkbox 和 association 开头的字段
+    3. 过滤空值
+    4. 对于每个有值的字段，去映射表中查找 field = 原始 key
+    5. 获取对应的 real_key，用 real_key 作为新的 key 组装成新 JSON
+    6. 特殊处理：如果字段是 numberField_xxx_value（含 _value 后缀）
+       - 去掉 _value 得到 base_key（如 numberField_mdy73qey）
+       - 用 base_key 去映射表查找
+       - 如果 field_type 是 'feature'，则 real_key 就是 feature 名称
+       - 将 _value 字段的值（授权数量）赋给这个 feature
+       - 数量字段不添加到 transformed_data
+    
     Args:
         raw_json: 原始JSON数据（字典）
+            示例结构：{
+                "FormList": {
+                    "employeeField_me87gr4t": ["夏于皓"],
+                    "numberField_mdy73qey": 21,
+                    "numberField_mdy73qey_value": "21",
+                    ...
+                },
+                "Usage": "sale",
+                "LicenseType": "FLEXNET"
+            }
         license_type: License类型 ('flexnet' 或 'bitanswer')
         user_type: 用户类型 ('internal' 或 'external')
     
     Returns:
         dict: 转换后的新JSON数据
+            {
+                'transformed_data': {...},  # 转换后的数据（使用 real_key）
+                'usage': 'sale',
+                'license_type': 'flexnet'
+            }
     """
     # 获取该类型的所有字段映射
     mappings = LicenseFieldMapping.objects.filter(
@@ -44,45 +72,267 @@ def transform_json_with_mapping(raw_json, license_type, user_type='internal'):
         is_deleted=False
     ).all()
     
-    # 构建映射字典: {field: real_key}
-    mapping_dict = {m.field: m.real_key for m in mappings}
+    # 构建映射字典: {原始field: {real_key, field_type, name}}
+    field_mapping = {}
+    for m in mappings:
+        field_mapping[m.field] = {
+            'real_key': m.real_key,
+            'field_type': m.field_type,  # 'feature', 'customer_info', 'applicant_info', 'common'
+            'name': m.name
+        }
     
-    # 提取 FormList 中的数据
+    # 提取并列字段
     form_list = raw_json.get('FormList', {})
+    usage = raw_json.get('Usage', '')
+    license_type_raw = raw_json.get('LicenseType', '').upper()
     
-    # 过滤空值并转换key
+    if not form_list:
+        return {
+            'transformed_data': {},
+            'usage': usage,
+            'license_type': license_type_raw.lower()
+        }
+    
+    # 存储转换后的数据
     transformed_data = {}
+    features = []  # Feature列表（真实的feature名称，来自 real_key）
+    feature_values = {}  # Feature对应的数量值 {feature_name: quantity}
     
+    def is_empty_value(value):
+        """判断值是否为空"""
+        if value is None:
+            return True
+        if isinstance(value, str) and value.strip() == '':
+            return True
+        if isinstance(value, list) and len(value) == 0:
+            return True
+        if isinstance(value, dict) and len(value) == 0:
+            return True
+        return False
+    
+    def should_ignore_key(key):
+        """判断是否应该忽略该字段"""
+        # 忽略 checkbox 开头的 key
+        if key.startswith('checkbox'):
+            return True
+        # 忽略 association 开头的 key
+        if key.startswith('association'):
+            return True
+        return False
+    
+    def is_quantity_key(key):
+        """判断是否为数量字段（含_value后缀）"""
+        return key.endswith('_value')
+    
+    def transform_table_row(row_data):
+        """
+        转换表格中的一行数据
+        
+        Args:
+            row_data: 表格行的字典数据
+        
+        Returns:
+            dict: 转换后的行数据
+        """
+        transformed_row = {}
+        
+        if not isinstance(row_data, dict):
+            return row_data
+        
+        for key, value in row_data.items():
+            # 跳过应该忽略的字段
+            if should_ignore_key(key):
+                continue
+            
+            # 跳过空值
+            if is_empty_value(value):
+                continue
+            
+            # 检查是否在映射表中
+            if key in field_mapping:
+                mapping_info = field_mapping[key]
+                real_key = mapping_info['real_key']
+                field_type = mapping_info['field_type']
+                
+                # 如果是 Feature 类型（大小写不敏感）
+                if field_type.lower() == 'feature':
+                    feature_name = real_key
+                    
+                    # 查找对应的数量字段
+                    quantity_key = key + '_value'
+                    quantity_value = row_data.get(quantity_key)
+                    
+                    if quantity_value and not is_empty_value(quantity_value):
+                        try:
+                            quantity = int(quantity_value) if isinstance(quantity_value, str) else int(quantity_value)
+                            feature_values[feature_name] = quantity
+                            if feature_name not in features:
+                                features.append(feature_name)
+                        except:
+                            if feature_name not in features:
+                                features.append(feature_name)
+                    else:
+                        if feature_name not in features:
+                            features.append(feature_name)
+                    
+                    transformed_row[real_key] = value
+                else:
+                    transformed_row[real_key] = value
+            else:
+                # 不在映射表中的字段，使用原 key
+                transformed_row[key] = value
+        
+        return transformed_row
+    
+    # 第一步：处理所有非 _value 字段
     for key, value in form_list.items():
-        # 过滤空值：None、空字符串、空列表、空字典
-        if value is None or value == '' or value == [] or value == {}:
+        # 跳过应该忽略的字段
+        if should_ignore_key(key):
             continue
         
-        # 查找映射后的key
-        real_key = mapping_dict.get(key, key)  # 如果没有映射，使用原key
+        # 跳过数量字段（第二步处理）
+        if is_quantity_key(key):
+            continue
         
-        # 处理特殊数据类型
-        if isinstance(value, list):
-            # 数组类型，保留原值
-            transformed_data[real_key] = value
-        elif isinstance(value, (int, float)):
-            # 数字类型
-            transformed_data[real_key] = value
-        elif isinstance(value, str):
-            # 字符串类型
-            transformed_data[real_key] = value
+        # 跳过空值
+        if is_empty_value(value):
+            continue
+        
+        # 检查是否在映射表中
+        if key in field_mapping:
+            mapping_info = field_mapping[key]
+            real_key = mapping_info['real_key']
+            field_type = mapping_info['field_type']
+            
+            # 如果是 Feature 类型（大小写不敏感）
+            if field_type.lower() == 'feature':
+                # 查找对应的数量字段（key + '_value'）
+                quantity_key = key + '_value'
+                quantity_value = form_list.get(quantity_key)
+                
+                # 提取 feature 名称（使用 real_key）
+                feature_name = real_key
+                
+                if quantity_value and not is_empty_value(quantity_value):
+                    try:
+                        quantity = int(quantity_value) if isinstance(quantity_value, str) else int(quantity_value)
+                        feature_values[feature_name] = quantity
+                        if feature_name not in features:
+                            features.append(feature_name)
+                    except:
+                        # 即使数量解析失败，也添加 feature
+                        if feature_name not in features:
+                            features.append(feature_name)
+                else:
+                    # 没有数量字段或数量为空，也添加 feature
+                    if feature_name not in features:
+                        features.append(feature_name)
+                
+                # 保存到 transformed_data（使用 real_key 作为 key）
+                transformed_data[real_key] = value
+                
+            else:
+                # 其他类型（CustomerInfo, ApplicantInfo, Common）
+                # 检查是否是表格字段（list 类型）
+                if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                    # 这是一个表格字段，需要递归处理其中的每一项
+                    
+                    # real_key 就是表格的名称
+                    table_real_key = real_key
+                    
+                    # 递归处理表格中的每一行
+                    transformed_rows = []
+                    for row_idx, row_data in enumerate(value):
+                        if isinstance(row_data, dict):
+                            transformed_row = transform_table_row(row_data)
+                            transformed_rows.append(transformed_row)
+                    
+                    # 将转换后的表格数据添加到 transformed_data
+                    if transformed_rows:
+                        transformed_data[table_real_key] = transformed_rows
+                else:
+                    # 普通字段，直接保存，使用 real_key 作为 key
+                    transformed_data[real_key] = value
         else:
-            # 其他类型转为字符串
-            transformed_data[real_key] = str(value)
+            # 不在映射表中的字段，检查是否是表格字段（list 类型）
+            if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                # 这是一个表格字段，需要递归处理其中的每一项
+                print(f"\n检测到表格字段: {key}，包含 {len(value)} 条记录")
+                
+                # 先转换表格字段的 key
+                table_real_key = key  # 默认使用原 key
+                if key in field_mapping:
+                    table_real_key = field_mapping[key]['real_key']
+                
+                # 递归处理表格中的每一行
+                transformed_rows = []
+                for row_idx, row_data in enumerate(value):
+                    if isinstance(row_data, dict):
+                        print(f"  处理第 {row_idx + 1} 行数据，原始 key: {list(row_data.keys())}")
+                        transformed_row = transform_table_row(row_data)
+                        transformed_rows.append(transformed_row)
+                        print(f"  第 {row_idx + 1} 行转换后的数据: {json.dumps(transformed_row, ensure_ascii=False)}")
+                
+                # 将转换后的表格数据添加到 transformed_data
+                if transformed_rows:
+                    transformed_data[table_real_key] = transformed_rows
+            else:
+                # 普通字段，使用原 key
+                transformed_data[key] = value
     
-    # 添加元数据
+    # 第二步：处理 _value 字段（数量字段）
+    for key, value in form_list.items():
+        # 只处理 _value 字段
+        if not is_quantity_key(key):
+            continue
+        
+        # 跳过空值
+        if is_empty_value(value):
+            continue
+        
+        # 去掉 _value 后缀，查找对应的 feature
+        base_key = key[:-6]  # 去掉 '_value'
+        
+        if base_key in field_mapping:
+            mapping_info = field_mapping[base_key]
+            if mapping_info['field_type'].lower() == 'feature':
+                feature_name = mapping_info['real_key']
+                
+                try:
+                    quantity = int(value) if isinstance(value, str) else int(value)
+                    feature_values[feature_name] = quantity
+                    
+                    # 如果 features 列表中还没有这个 feature，添加它
+                    if feature_name not in features:
+                        features.append(feature_name)
+                    
+                    # 将非空的 _value 字段也添加到 transformed_data，使用 real_key
+                    value_real_key = mapping_info['real_key'] + '_value'
+                    transformed_data[value_real_key] = quantity
+                except:
+                    pass
+        # 注意：只有非空的 _value 字段才会被添加到 transformed_data
+    
+    # 打印调试信息
+    print("=" * 80)
+    print("转换后的 transformed_data:")
+    print(json.dumps(transformed_data, ensure_ascii=False, indent=2))
+    print(f"\nFeatures: {features}")
+    print(f"Feature Values: {feature_values}")
+    print(f"Usage: {usage}")
+    print(f"License Type: {license_type_raw.lower()}")
+    print("=" * 80)
+    
+    # 返回结果
     result = {
         'transformed_data': transformed_data,
-        'usage': raw_json.get('Usage', ''),
-        'license_type': raw_json.get('LicenseType', '').lower(),
+        'usage': usage,
+        'license_type': license_type_raw.lower(),
+        'features': features,
+        'feature_values': feature_values,
         'original_keys_count': len(form_list),
         'filtered_keys_count': len(transformed_data),
-        'mapping_used': len(mapping_dict)
+        'mapping_used': len(field_mapping)
     }
     
     return result
@@ -105,8 +355,8 @@ class LicenseApplicationViewSet(CustomModelViewSet):
     @action(methods=['post'], detail=False)
     def scan_txt_files(self, request):
         """
-        扫描指定目录中的TXT文件并创建License申请记录
-        1. 从配置目录读取所有TXT文件
+        扫描固定目录中的TXT文件并创建License申请记录
+        1. 从固定目录读取所有TXT文件
         2. 解析JSON数据
         3. 根据LicenseType判断类型
         4. 使用字段映射表转换key
@@ -114,21 +364,19 @@ class LicenseApplicationViewSet(CustomModelViewSet):
         6. 创建申请记录
         """
         try:
-            # 获取TXT文件目录（从配置或请求参数）
-            txt_dir = request.data.get('txt_dir', None)
-            if not txt_dir:
-                # 默认目录：BASE_DIR/license_txt_files
-                txt_dir = os.path.join(BASE_DIR, 'license_txt_files')
+            # 固定目录：BASE_DIR/license_txt_files
+            txt_dir = os.path.join(BASE_DIR, 'license_txt_files')
             
             # 检查目录是否存在
             if not os.path.exists(txt_dir):
                 return ErrorResponse(msg=f'TXT文件目录不存在: {txt_dir}')
             
-            # 获取用户类型（默认为internal）
-            user_type = request.data.get('user_type', 'internal')
+            # 扫描目录中的所有.json文件
+            txt_files = [f for f in os.listdir(txt_dir) if f.endswith('.json')]
             
-            # 扫描目录中的所有.txt文件
-            txt_files = [f for f in os.listdir(txt_dir) if f.endswith('.txt')]
+            # 获取文件数量
+            file_count = len(txt_files)
+            logger.info(f'扫描到 {file_count} 个TXT文件，将逐个处理')
             
             if not txt_files:
                 return SuccessResponse(data={'processed': 0}, msg='目录中没有找到TXT文件')
@@ -137,7 +385,9 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             processed_count = 0
             error_count = 0
             
-            for txt_file in txt_files:
+            # 逐个处理每个TXT文件
+            for idx, txt_file in enumerate(txt_files, 1):
+                logger.info(f'正在处理第 {idx}/{file_count} 个文件: {txt_file}')
                 try:
                     file_path = os.path.join(txt_dir, txt_file)
                     
@@ -174,72 +424,116 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                         error_count += 1
                         continue
                     
-                    # 使用字段映射表转换JSON
+                    # 使用字段映射表转换JSON（根据数据库中的实际数据，使用 external）
+                    user_type = 'external'
                     transform_result = transform_json_with_mapping(raw_json, license_type, user_type)
                     transformed_data = transform_result['transformed_data']
+                    features = transform_result.get('features', [])
+                    feature_values = transform_result.get('feature_values', {})
+                                    
+                    # 从数据库动态获取字段映射关系
+                    mappings = LicenseFieldMapping.objects.filter(
+                        license_type=license_type,
+                        user_type=user_type,
+                        is_deleted=False
+                    ).all()
+                                    
+                    # 构建 real_key 到 field 的映射
+                    real_key_to_field = {m.real_key: m.field for m in mappings}
                     
-                    # 提取关键字段用于创建申请记录
+                    # 定义关键字段的 real_key
+                    # 根据数据库表中的 real_key 定义
+                    KEY_FIELD_MAPPING = {
+                        'Applicant': 'applicant',           # 申请人
+                        'CustomerName': 'customer_name',    # 客户名称
+                        'MacAddress': 'mac_address',        # MAC地址
+                        'Hostname': 'hostname',             # 主机名
+                        'Product': 'product',               # 产品名/Product
+                        'Startdate': 'start_time',          # 开始时间
+                        'Expirydate': 'end_time',           # 结束时间
+                        'SerialNumber': 'serial_number',    # 流水号
+                    }
+                                    
+                    # 从转换后的数据中提取信息
                     applicant = ''
                     customer_name = ''
                     mac_address = ''
-                    feature = ''
+                    hostname = ''  # 主机名
+                    product = ''  # 产品名
+                    serial_number = ''  # 流水号
                     start_time = None
                     end_time = None
-                    quantity = 1
                     
-                    # 从转换后的数据中提取信息
-                    for key, value in transformed_data.items():
-                        # 申请人
-                        if key in ['applicant', 'employeeField_me87gr4t']:
-                            if isinstance(value, list) and len(value) > 0:
-                                applicant = value[0]
-                            elif isinstance(value, str):
-                                applicant = value
-                        
-                        # 客户名称
-                        elif key in ['customer_name', 'textField_me87gr4w']:
-                            customer_name = str(value)
-                        
-                        # MAC地址
-                        elif key in ['mac_address', 'host_id', 'textField_me87gr4o']:
-                            mac_address = str(value)
-                        
-                        # Feature
-                        elif key in ['feature', 'checkboxField_me87gr5e']:
+                    # 直接使用 transform_result 中的 features
+                    if features:
+                        product = ','.join(features)
+                    
+                    # 从转换后的数据中提取其他关键字段
+                    for real_key, value in transformed_data.items():
+                        if real_key in KEY_FIELD_MAPPING:
+                            field_type = KEY_FIELD_MAPPING[real_key]
+                            
+                            # 处理列表类型的值
                             if isinstance(value, list):
-                                feature = ','.join(value)
+                                if field_type == 'applicant':
+                                    applicant = value[0] if len(value) > 0 and isinstance(value[0], str) else str(value[0]) if len(value) > 0 else ''
+                                elif field_type == 'customer_name':
+                                    customer_name = str(value[0]) if len(value) > 0 else ''
+                                elif field_type == 'mac_address':
+                                    mac_address = str(value[0]) if len(value) > 0 else ''
+                            # 处理字符串/数字类型的值
                             else:
-                                feature = str(value)
-                        
-                        # 开始时间
-                        elif key in ['start_time', 'dateField_me87gr4v']:
-                            if isinstance(value, (int, float)):
-                                from datetime import datetime
-                                start_time = datetime.fromtimestamp(value / 1000)
-                        
-                        # 结束时间
-                        elif key in ['end_time', 'dateField_mdy73q6p']:
-                            if isinstance(value, (int, float)):
-                                from datetime import datetime
-                                end_time = datetime.fromtimestamp(value / 1000)
-                        
-                        # 授权数量
-                        elif key in ['quantity', 'numberField_mj2hbj5c_value']:
-                            try:
-                                quantity = int(value)
-                            except:
-                                quantity = 1
+                                if field_type == 'applicant':
+                                    applicant = str(value) if value else ''
+                                elif field_type == 'customer_name':
+                                    customer_name = str(value) if value else ''
+                                elif field_type == 'mac_address':
+                                    mac_address = str(value) if value else ''
+                                elif field_type == 'hostname':
+                                    hostname = str(value) if value else ''
+                                elif field_type == 'serial_number':
+                                    serial_number = str(value) if value else ''
+                                elif field_type == 'start_time':
+                                    if isinstance(value, (int, float)):
+                                        from datetime import datetime
+                                        start_time = datetime.fromtimestamp(value / 1000)
+                                elif field_type == 'end_time':
+                                    if isinstance(value, (int, float)):
+                                        from datetime import datetime
+                                        end_time = datetime.fromtimestamp(value / 1000)
+                    
+                    # 处理嵌套的表格数据，查找时间字段
+                    for key, value in transformed_data.items():
+                        if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                            # 这是表格数据
+                            for row in value:
+                                if isinstance(row, dict):
+                                    # 查找表格中的时间字段
+                                    for table_key, table_value in row.items():
+                                        if table_key in KEY_FIELD_MAPPING:
+                                            field_type = KEY_FIELD_MAPPING[table_key]
+                                            if field_type == 'start_time' and isinstance(table_value, (int, float)):
+                                                if start_time is None:
+                                                    from datetime import datetime
+                                                    start_time = datetime.fromtimestamp(table_value / 1000)
+                                            elif field_type == 'end_time' and isinstance(table_value, (int, float)):
+                                                if end_time is None:
+                                                    from datetime import datetime
+                                                    end_time = datetime.fromtimestamp(table_value / 1000)
                     
                     # 创建申请记录
                     application = LicenseApplication.objects.create(
                         applicant=applicant or '未知申请人',
                         application_type=license_type,
-                        feature=feature or '未指定',
+                        feature=features if features else [],  # Feature 列表
+                        product=product or '',  # 产品名称
+                        serial_number=serial_number or '',  # 序列号
                         customer_name=customer_name or '未指定客户',
                         mac_address=mac_address or '未指定',
+                        hostname=hostname or '',  # 主机名
                         start_time=start_time,
                         end_time=end_time,
-                        quantity=quantity,
+                        quantity=feature_values if feature_values else {},  # Feature 数量字典，如 {"GloryEX": 10, "GloryEX_Basic": 5}
                         json_data=raw_json,  # 保存原始JSON
                         status=3,  # 待制作
                         max_retry_count=3
@@ -258,6 +552,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     # 这里可以选择移动到processed目录或删除
                     
                     processed_count += 1
+                    logger.info(f'成功处理第 {idx} 个文件: {txt_file}，申请记录ID: {application.id}')
                     results.append({
                         'file': txt_file,
                         'status': 'success',
@@ -271,7 +566,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     })
                     
                 except Exception as e:
-                    logger.error(f"处理文件 {txt_file} 失败: {str(e)}")
+                    logger.error(f'处理第 {idx} 个文件 {txt_file} 失败: {str(e)}')
                     error_count += 1
                     results.append({
                         'file': txt_file,
@@ -279,16 +574,144 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                         'message': str(e)
                     })
             
+            logger.info(f'扫描完成：共 {file_count} 个文件，成功 {processed_count} 个，失败 {error_count} 个')
             return SuccessResponse(data={
-                'total_files': len(txt_files),
+                'total_files': file_count,
                 'processed': processed_count,
                 'errors': error_count,
                 'results': results
-            }, msg=f'扫描完成：成功处理 {processed_count} 个文件，{error_count} 个失败')
+            }, msg=f'扫描完成：共 {file_count} 个文件，成功处理 {processed_count} 个，{error_count} 个失败')
             
         except Exception as e:
             logger.error(f"扫描TXT文件失败: {str(e)}")
             return ErrorResponse(msg=f'扫描失败: {str(e)}')
+    
+    @action(methods=['post'], detail=False)
+    def start_file_watcher(self, request):
+        """
+        启动文件监听器（后台线程）
+        监听指定目录，自动处理新创建的 JSON/TXT 文件
+        """
+        try:
+            from apps.lylicense.file_watcher import LicenseFileHandler
+            import threading
+            
+            # 监听目录
+            watch_dir = os.path.join(BASE_DIR, 'license_data', 'incoming')
+            
+            # 定义文件处理回调函数
+            def process_license_file(file_path):
+                """
+                处理 License 文件的回调函数
+                
+                Args:
+                    file_path: 文件路径
+                
+                Returns:
+                    bool: 是否处理成功
+                """
+                try:
+                    logger.info(f"开始处理文件: {file_path}")
+                    
+                    # 读取文件内容
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # 尝试解析 JSON
+                    try:
+                        json_data = json.loads(content)
+                    except json.JSONDecodeError:
+                        logger.error(f"JSON 解析失败: {file_path}")
+                        return False
+                    
+                    # 调用转换函数
+                    result = transform_json_with_mapping(json_data, license_type='bitanswer', user_type='internal')
+                    
+                    if not result['success']:
+                        logger.error(f"转换失败: {result.get('error')}")
+                        return False
+                    
+                    transformed_data = result['data']
+                    features = result['features']
+                    feature_values = result['feature_values']
+                    
+                    # 提取数据
+                    applicant = None
+                    customer_name = None
+                    mac_address = None
+                    hostname = None
+                    product = None
+                    serial_number = None
+                    quantity = 1
+                    start_time = None
+                    end_time = None
+                    
+                    # 从转换后的数据中提取字段
+                    for key, value in transformed_data.items():
+                        if key == 'ApplicantInfo' and isinstance(value, list) and len(value) > 0:
+                            applicant_info = value[0]
+                            applicant = applicant_info.get('applicantName') or applicant_info.get('ApplicantName')
+                        elif key == 'CustomerInfo' and isinstance(value, list) and len(value) > 0:
+                            customer_info = value[0]
+                            customer_name = customer_info.get('customerName') or customer_info.get('CustomerName')
+                            mac_address = customer_info.get('macAddress') or customer_info.get('MacAddress')
+                            hostname = customer_info.get('hostname') or customer_info.get('Hostname')
+                        elif key == 'Common':
+                            if isinstance(value, dict):
+                                product = value.get('product') or value.get('Product')
+                                serial_number = value.get('serialNumber') or value.get('SerialNumber')
+                                start_timestamp = value.get('startDate') or value.get('Startdate')
+                                end_timestamp = value.get('endDate') or value.get('Expirydate')
+                                
+                                if start_timestamp and isinstance(start_timestamp, (int, float)):
+                                    from datetime import datetime
+                                    start_time = datetime.fromtimestamp(start_timestamp / 1000)
+                                if end_timestamp and isinstance(end_timestamp, (int, float)):
+                                    from datetime import datetime
+                                    end_time = datetime.fromtimestamp(end_timestamp / 1000)
+                    
+                    # 创建申请记录
+                    application = LicenseApplication.objects.create(
+                        applicant=applicant or '未知申请人',
+                        application_type='bitanswer',
+                        feature=features if features else [],
+                        product=product or '',
+                        serial_number=serial_number or '',
+                        customer_name=customer_name or '未指定客户',
+                        mac_address=mac_address or '未指定',
+                        hostname=hostname or '',
+                        start_time=start_time,
+                        end_time=end_time,
+                        quantity=feature_values if feature_values else {},
+                        json_data=json_data,
+                        status=3,
+                        max_retry_count=3
+                    )
+                    
+                    logger.info(f"申请记录创建成功，ID: {application.id}")
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"处理文件失败 {file_path}: {str(e)}", exc_info=True)
+                    return False
+            
+            # 检查是否已经在运行
+            if hasattr(self, '_watcher_thread') and self._watcher_thread.is_alive():
+                return ErrorResponse(msg='文件监听器已在运行中')
+            
+            # 在后台线程中启动监听器
+            def run_watcher():
+                from apps.lylicense.file_watcher import start_file_watcher
+                start_file_watcher(watch_dir, process_license_file)
+            
+            self._watcher_thread = threading.Thread(target=run_watcher, daemon=True)
+            self._watcher_thread.start()
+            
+            return SuccessResponse(msg=f'文件监听器已启动，监听目录: {watch_dir}')
+            
+        except Exception as e:
+            logger.error(f"启动文件监听器失败: {str(e)}")
+            return ErrorResponse(msg=f'启动失败: {str(e)}')
     
     @action(methods=['post'], detail=True)
     def parse_and_generate(self, request, pk=None):
@@ -319,8 +742,65 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             with open(json_file_path, 'r', encoding='utf-8') as f:
                 json_data = json.load(f)
             
-            # 更新申请的JSON数据和状态
-            instance.json_data = json_data
+            # 从JSON中提取元数据作为转换条件
+            license_type_from_json = json_data.get('LicenseType', '').lower()
+            usage_from_json = json_data.get('Usage', '')
+            
+            # 转换Usage为数据库值
+            user_type_mapping = {
+                '内部': 'internal',
+                '外部': 'external',
+                'internal': 'internal',
+                'external': 'external',
+            }
+            
+            # 如果Usage为空或不在映射中，使用申请记录中的用户类型（如果有）
+            if usage_from_json and usage_from_json in user_type_mapping:
+                user_type_from_json = user_type_mapping[usage_from_json]
+                logger.info(f"从JSON提取Usage: '{usage_from_json}' -> '{user_type_from_json}'")
+            else:
+                # Usage为空或未知时，根据申请记录的application_type推断默认值
+                # 这里可以根据业务需求调整默认策略
+                user_type_from_json = 'external'  # 默认外部用户
+                logger.warning(f"JSON中Usage字段缺失或未知: '{usage_from_json}'，使用默认值: '{user_type_from_json}'")
+            
+            # 如果LicenseType为空，使用申请记录中的类型
+            if not license_type_from_json:
+                license_type_from_json = instance.application_type
+                logger.warning(f"JSON中LicenseType字段缺失，使用申请记录中的类型: '{license_type_from_json}'")
+            
+            logger.info(f"最终使用的转换条件 - LicenseType: {license_type_from_json}, UserType: {user_type_from_json}")
+            
+            # 使用字段映射表转换JSON数据（使用从JSON中提取的license_type和user_type）
+            transform_result = transform_json_with_mapping(
+                json_data, 
+                license_type_from_json if license_type_from_json else instance.application_type,
+                user_type_from_json
+            )
+            transformed_data = transform_result['transformed_data']
+            
+            # 如果申请记录中有keyword字段，将其添加到转换后的数据中
+            if instance.keyword:
+                # 查找keyword对应的real_key（使用从JSON中提取的license_type和user_type）
+                keyword_mapping = LicenseFieldMapping.objects.filter(
+                    license_type=license_type_from_json if license_type_from_json else instance.application_type,
+                    user_type=user_type_from_json,
+                    field__icontains='selectfield',
+                    real_key__iexact='keyword',
+                    is_deleted=False
+                ).first()
+                
+                if keyword_mapping:
+                    # 使用映射表中的real_key作为key
+                    transformed_data[keyword_mapping.real_key] = instance.keyword
+                    logger.info(f"添加keyword字段: {keyword_mapping.real_key} = {instance.keyword}")
+                else:
+                    # 如果没有找到映射，直接使用'Keyword'作为key
+                    transformed_data['Keyword'] = instance.keyword
+                    logger.info(f"未找到keyword映射，使用默认key: Keyword = {instance.keyword}")
+            
+            # 更新申请的JSON数据和状态（使用转换后的数据）
+            instance.json_data = transformed_data
             instance.status = 2  # 制作中
             instance.save()
             
@@ -484,6 +964,11 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                 'quantity': json_data.get('quantity', instance.quantity),
             }
             
+            # 如果JSON数据中有Keyword字段，添加到参数中
+            if 'Keyword' in json_data:
+                params['keyword'] = json_data['Keyword']
+                logger.info(f"添加Keyword参数: {params['keyword']}")
+            
             # Bitanswer API配置
             bitanswer_api_url = 'http://bitanswer-server/api/generate-license'  # 替换为实际API地址
             bitanswer_api_key = 'your-api-key'  # 替换为实际的API Key
@@ -512,7 +997,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                 if not os.path.exists(license_dir):
                     os.makedirs(license_dir)
                 
-                file_name = f'{instance.id}_bit.lic'
+                file_name = f'{instance.id}_bit.upd'
                 license_file = os.path.join(license_dir, file_name)
                 relative_path = os.path.join('license', 'bitanswer', file_name)
                 
@@ -622,7 +1107,7 @@ class LicenseFieldMappingViewSet(CustomModelViewSet):
     serializer_class = LicenseFieldMappingSerializer
     create_serializer_class = LicenseFieldMappingCreateSerializer
     update_serializer_class = LicenseFieldMappingUpdateSerializer
-    filterset_fields = ['license_type', 'user_type']
+    filterset_fields = ['license_type', 'user_type', 'field', 'name', 'real_key']
     search_fields = ['field', 'name', 'real_key']
     ordering_fields = ['create_datetime']
     ordering = '-create_datetime'
