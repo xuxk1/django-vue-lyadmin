@@ -40,13 +40,24 @@ class LicenseApplicationCreateSerializer(CustomModelSerializer):
     """
     License申请-新增序列化器
     """
+    def validate_serial_number(self, value):
+        """
+        验证序列号唯一性
+        """
+        if value:
+            # 检查是否已存在相同的序列号
+            existing = LicenseApplication.objects.filter(serial_number=value).first()
+            if existing:
+                raise serializers.ValidationError(f'序列号 {value} 已被使用，申请记录ID: {existing.id}')
+        return value
+    
     class Meta:
         model = LicenseApplication
         read_only_fields = ["id"]
         fields = [
             'id', 'applicant', 'applicant_id', 'application_type', 'feature',
             'product', 'serial_number', 'keyword', 'customer_name', 'mac_address', 'hostname',
-            'start_time', 'end_time', 'quantity',
+            'start_time', 'end_time', 'quantity', 'file_hash',
             'json_data', 'status', 'fail_reason', 'retry_count', 'max_retry_count',
             'create_datetime', 'update_datetime'
         ]
@@ -112,6 +123,7 @@ class LicenseFieldMappingSerializer(CustomModelSerializer):
     license_type_name = serializers.SerializerMethodField(read_only=True)
     user_type_name = serializers.SerializerMethodField(read_only=True)
     field_type_name = serializers.SerializerMethodField(read_only=True)
+    product_name = serializers.SerializerMethodField(read_only=True)
     creator_name = serializers.SerializerMethodField(read_only=True)
     
     def get_license_type_name(self, obj):
@@ -123,6 +135,9 @@ class LicenseFieldMappingSerializer(CustomModelSerializer):
     def get_field_type_name(self, obj):
         return obj.get_field_type_display()
     
+    def get_product_name(self, obj):
+        return obj.product or ''
+    
     def get_creator_name(self, obj):
         if obj.creator:
             return obj.creator.username
@@ -132,8 +147,8 @@ class LicenseFieldMappingSerializer(CustomModelSerializer):
         model = LicenseFieldMapping
         read_only_fields = ["id"]
         fields = [
-            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 'remark',
-            'is_deleted', 'license_type_name', 'user_type_name', 'field_type_name',
+            'id', 'license_type', 'user_type', 'product', 'field_type', 'field', 'name', 'real_key', 'remark',
+            'is_deleted', 'license_type_name', 'user_type_name', 'product_name', 'field_type_name',
             'create_datetime', 'update_datetime',
             'creator', 'creator_name'
         ]
@@ -174,7 +189,7 @@ class LicenseFieldMappingCreateSerializer(CustomModelSerializer):
         model = LicenseFieldMapping
         read_only_fields = ["id"]
         fields = [
-            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 'remark',
+            'id', 'license_type', 'user_type', 'product', 'field_type', 'field', 'name', 'real_key', 'remark',
             'is_deleted',
             'create_datetime', 'update_datetime',
             'creator', 'description'
@@ -197,7 +212,7 @@ class LicenseFieldMappingUpdateSerializer(CustomModelSerializer):
         model = LicenseFieldMapping
         read_only_fields = ["id"]
         fields = [
-            'id', 'license_type', 'user_type', 'field_type', 'field', 'name', 'real_key', 'remark',
+            'id', 'license_type', 'user_type', 'product', 'field_type', 'field', 'name', 'real_key', 'remark',
             'is_deleted',
             'create_datetime', 'update_datetime',
             'creator', 'description'

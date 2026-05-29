@@ -47,18 +47,60 @@
                 <el-table-column min-width="100" prop="application_type_display" label="License类型" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="200" prop="feature" label="Feature" align="left">
                     <template #default="scope">
-                        <pre v-if="scope.row.feature && Array.isArray(scope.row.feature)" style="margin: 0; font-size: 12px; line-height: 1.5;">{{ scope.row.feature.join('\n') }}</pre>
-                        <pre v-else-if="scope.row.feature && typeof scope.row.feature === 'object'" style="margin: 0; font-size: 12px; line-height: 1.5;">{{ JSON.stringify(scope.row.feature, null, 2) }}</pre>
-                        <span v-else>{{ scope.row.feature }}</span>
+                        <div class="expandable-content">
+                            <pre v-if="scope.row.feature && Array.isArray(scope.row.feature)" 
+                                 :class="{'expanded': expandedFeatures[scope.row.id]}" 
+                                 style="margin: 0; font-size: 12px; line-height: 1.5;">{{ getLimitedFeatures(scope.row.feature, scope.row.id) }}
+                            </pre>
+                            <pre v-else-if="scope.row.feature && typeof scope.row.feature === 'object'" 
+                                 :class="{'expanded': expandedFeatures[scope.row.id]}" 
+                                 style="margin: 0; font-size: 12px; line-height: 1.5;">{{ getLimitedQuantity(scope.row.feature, scope.row.id) }}
+                            </pre>
+                            <span v-else>{{ scope.row.feature }}</span>
+                            <div v-if="shouldShowExpand(scope.row.feature)" class="expand-btn-group">
+                                <div class="expand-btn" 
+                                     @click="toggleExpand('feature', scope.row.id)">
+                                    <el-icon><ArrowDown v-if="!expandedFeatures[scope.row.id]" /><ArrowUp v-else /></el-icon>
+                                    {{ expandedFeatures[scope.row.id] ? '收起' : '展开' }}
+                                </div>
+                                <div v-if="expandedFeatures[scope.row.id]" 
+                                     class="copy-btn" 
+                                     @click="copyContent(scope.row.feature, 'Feature')">
+                                    <el-icon><CopyDocument /></el-icon>
+                                    复制
+                                </div>
+                            </div>
+                        </div>
                     </template>
                 </el-table-column>
                 <el-table-column min-width="150" prop="keyword" label="关键字" show-overflow-tooltip></el-table-column>
+                <el-table-column min-width="150" prop="serial_number" label="申请序列号" show-overflow-tooltip>
+                    <template #default="scope">
+                        <el-tag v-if="scope.row.serial_number" type="primary" size="small">{{ scope.row.serial_number }}</el-tag>
+                        <span v-else style="color: #909399;">未设置</span>
+                    </template>
+                </el-table-column>
                 <el-table-column min-width="120" prop="customer_name" label="客户名称" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="150" prop="mac_address" label="MAC Address/HostID" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="200" prop="quantity" label="授权数量" align="left">
                     <template #default="scope">
-                        <pre v-if="scope.row.quantity && typeof scope.row.quantity === 'object'" style="margin: 0; font-size: 12px; line-height: 1.5;">{{ JSON.stringify(scope.row.quantity, null, 2) }}</pre>
-                        <span v-else>{{ scope.row.quantity }}</span>
+                        <div class="expandable-content">
+                            <pre v-if="scope.row.quantity && typeof scope.row.quantity === 'object'" :class="{'expanded': expandedQuantities[scope.row.id], 'collapsed': !expandedQuantities[scope.row.id]}" style="margin: 0; font-size: 12px; line-height: 1.5;" v-html="getLimitedQuantity(scope.row.quantity, scope.row.id)"></pre>
+                            <span v-else>{{ scope.row.quantity }}</span>
+                            <div v-if="shouldShowExpandQuantity(scope.row.quantity)" class="expand-btn-group">
+                                <div class="expand-btn" 
+                                     @click="toggleExpand('quantity', scope.row.id)">
+                                    <el-icon><ArrowDown v-if="!expandedQuantities[scope.row.id]" /><ArrowUp v-else /></el-icon>
+                                    {{ expandedQuantities[scope.row.id] ? '收起' : '展开' }}
+                                </div>
+                                <div v-if="expandedQuantities[scope.row.id]" 
+                                     class="copy-btn" 
+                                     @click="copyContent(scope.row.quantity, '授权数量')">
+                                    <el-icon><CopyDocument /></el-icon>
+                                    复制
+                                </div>
+                            </div>
+                        </div>
                     </template>
                 </el-table-column>
                 <el-table-column min-width="150" prop="start_time" label="开始时间"></el-table-column>
@@ -90,7 +132,13 @@
                     </template>
                     <template #default="scope">
                         <span class="table-operate-btn" @click="handleEdit(scope.row, 'edit')" v-show="hasPermission(this.$route.name,'Update')">编辑</span>
-                        <span class="table-operate-btn" @click="handleGenerate(scope.row)" v-show="hasPermission(this.$route.name,'Generate') && (scope.row.status==3)">制作License</span>
+                        <span 
+                            class="table-operate-btn" 
+                            :class="{ 'disabled-btn': isEndTimeExpired(scope.row.end_time) || !scope.row.start_time || !scope.row.end_time }"
+                            @click="!isEndTimeExpired(scope.row.end_time) && scope.row.start_time && scope.row.end_time && handleGenerate(scope.row)" 
+                            v-show="hasPermission(this.$route.name,'Generate') && (scope.row.status==3)"
+                            :title="!scope.row.start_time || !scope.row.end_time ? '开始时间或结束时间未设置，无法制作' : (isEndTimeExpired(scope.row.end_time) ? '结束时间已过期，无法制作' : '制作License')"
+                        >制作License</span>
                         <span class="table-operate-btn" @click="handleRetry(scope.row)" v-show="hasPermission(this.$route.name,'Retry') && scope.row.status==0 && scope.row.retry_count < (scope.row.max_retry_count || 3)">重试</span>
                         <span class="table-operate-btn" @click="handleViewDetail(scope.row)" v-show="hasPermission(this.$route.name,'Retrieve')">详情</span>
                         <span class="table-operate-btn" @click="handleDelete(scope.row)" v-show="hasPermission(this.$route.name,'Delete')">删除</span>
@@ -171,6 +219,21 @@
                         </el-form-item>
                     </el-col>
                     <el-col :span="12">
+                        <el-form-item label="申请序列号" prop="serial_number">
+                            <el-input 
+                                v-model="form.serial_number" 
+                                placeholder="请输入唯一序列号，防止重复申请" 
+                                clearable
+                                :disabled="dialogType === 'edit'"
+                            ></el-input>
+                            <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+                                {{ dialogType === 'edit' ? '编辑时不可修改序列号' : '每个申请的唯序列号，不能重复' }}
+                            </div>
+                        </el-form-item>
+                    </el-col>
+                </el-row>
+                <el-row :gutter="20">
+                    <el-col :span="12">
                         <el-form-item label="开始时间" prop="start_time">
                             <el-date-picker 
                                 v-model="form.start_time" 
@@ -235,6 +298,9 @@
                 loadingPage:false,
                 detailDialogVisible: false,
                 currentRow: null,
+                // 展开/收起状态 - 使用对象确保响应式
+                expandedFeatures: {},  // 记录每个行的Feature是否展开 {id: true/false}
+                expandedQuantities: {},  // 记录每个行的Quantity是否展开 {id: true/false}
                 // 新增/编辑对话框
                 dialogVisible: false,
                 dialogType: 'add', // 'add' or 'edit'
@@ -246,6 +312,7 @@
                     application_type: '',
                     feature: '',
                     keyword: '',
+                    serial_number: '',
                     customer_name: '',
                     mac_address: '',
                     start_time: '',
@@ -269,6 +336,20 @@
                     ],
                     mac_address: [
                         { required: true, message: '请输入MAC地址', trigger: 'blur' }
+                    ],
+                    serial_number: [
+                        { 
+                            validator: (rule, value, callback) => {
+                                if (!value) {
+                                    callback(new Error('请输入申请序列号'))
+                                } else if (value.length < 3) {
+                                    callback(new Error('序列号长度不能少于3个字符'))
+                                } else {
+                                    callback()
+                                }
+                            }, 
+                            trigger: 'blur' 
+                        }
                     ]
                 },
                 formInline:{
@@ -295,6 +376,155 @@
             getIndex($index) {
                 return (this.pageparm.page-1)*this.pageparm.limit + $index +1
             },
+            // 判断结束时间是否已过期
+            isEndTimeExpired(endTime) {
+                if (!endTime) {
+                    return false // 如果没有结束时间，默认不过期
+                }
+                const now = new Date()
+                const end = new Date(endTime)
+                return end < now
+            },
+            // 检查是否可以制作License（开始时间和结束时间都必须存在）
+            canGenerateLicense(row) {
+                return row.start_time && row.end_time && !this.isEndTimeExpired(row.end_time)
+            },
+            
+            // ========== 展开/收起相关方法 ==========
+            
+            // 切换展开/收起状态
+            toggleExpand(type, rowId) {
+                console.log('toggleExpand called:', type, rowId)
+                if (type === 'feature') {
+                    // Vue 3 不需要使用 $set，直接赋值即可
+                    this.expandedFeatures[rowId] = !this.expandedFeatures[rowId]
+                    console.log('expandedFeatures:', this.expandedFeatures)
+                } else if (type === 'quantity') {
+                    this.expandedQuantities[rowId] = !this.expandedQuantities[rowId]
+                    console.log('expandedQuantities:', this.expandedQuantities)
+                }
+            },
+            
+            // 获取限制显示的Feature内容（默认显示3行）
+            getLimitedFeatures(features, rowId) {
+                if (!features || !Array.isArray(features)) return ''
+                
+                const isExpanded = this.expandedFeatures[rowId] || false
+                console.log('getLimitedFeatures - rowId:', rowId, 'isExpanded:', isExpanded, 'features.length:', features.length)
+                
+                if (isExpanded) {
+                    return features.join('\n')
+                }
+                
+                // 默认只显示前3个
+                const limited = features.slice(0, 3)
+                return limited.join('\n')
+            },
+            
+            // 获取限制显示的Quantity内容（默认显示3个）
+            getLimitedQuantity(quantity, rowId) {
+                if (!quantity || typeof quantity !== 'object') return JSON.stringify(quantity, null, 2)
+                
+                const isExpanded = this.expandedQuantities[rowId] || false
+                
+                if (isExpanded) {
+                    // 展开状态，显示完整结构
+                    return JSON.stringify(quantity, null, 2)
+                }
+                
+                // 收起状态，展平显示前3个feature
+                const flattenedEntries = []
+                for (const [product, features] of Object.entries(quantity)) {
+                    if (typeof features === 'object' && features !== null) {
+                        // 将每个产品的features展平
+                        for (const [featureName, count] of Object.entries(features)) {
+                            flattenedEntries.push([`${product}/${featureName}`, count])
+                        }
+                    } else {
+                        // 如果不是嵌套对象，直接添加
+                        flattenedEntries.push([product, features])
+                    }
+                }
+                
+                // 只显示前3个，用简洁的文本格式
+                const limited = flattenedEntries.slice(0, 3)
+                const hasMore = flattenedEntries.length > 3
+                
+                // 格式化为易读的文本：每行一个 feature: count
+                const lines = limited.map(([key, value]) => `  "${key}": ${value}`)
+                let result = '{\n' + lines.join(',\n')
+                
+                if (hasMore) {
+                    // 使用特殊标记，前端会用颜色区分显示
+                    result += `,\n  <span class="more-items-hint">... 还有 ${flattenedEntries.length - 3} 个</span>`
+                }
+                
+                result += '\n}'
+                return result
+            },
+            
+            // 判断Feature是否需要显示展开按钮
+            shouldShowExpand(features) {
+                if (!features || !Array.isArray(features)) return false
+                const shouldShow = features.length > 3
+                console.log('shouldShowExpand - features.length:', features.length, 'shouldShow:', shouldShow)
+                return shouldShow
+            },
+            
+            // 判断Quantity是否需要显示展开按钮
+            shouldShowExpandQuantity(quantity) {
+                if (!quantity || typeof quantity !== 'object') return false
+                
+                // 统计所有feature的总数（包括嵌套结构）
+                let totalFeatures = 0
+                for (const [product, features] of Object.entries(quantity)) {
+                    if (typeof features === 'object' && features !== null) {
+                        // 嵌套结构，统计第二层的键数量
+                        totalFeatures += Object.keys(features).length
+                    } else {
+                        // 非嵌套结构，直接计数
+                        totalFeatures += 1
+                    }
+                }
+                
+                const shouldShow = totalFeatures > 3
+                console.log('shouldShowExpandQuantity - totalFeatures:', totalFeatures, 'shouldShow:', shouldShow)
+                return shouldShow
+            },
+            
+            // 复制内容到剪贴板
+            async copyContent(content, fieldName) {
+                try {
+                    // 将内容转换为字符串
+                    let textToCopy
+                    if (typeof content === 'object' && content !== null) {
+                        textToCopy = JSON.stringify(content, null, 2)
+                    } else {
+                        textToCopy = String(content)
+                    }
+                    
+                    // 使用 Clipboard API
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        await navigator.clipboard.writeText(textToCopy)
+                        this.$message.success(`${fieldName}内容已复制到剪贴板`)
+                    } else {
+                        // 降级方案：使用 textarea
+                        const textarea = document.createElement('textarea')
+                        textarea.value = textToCopy
+                        textarea.style.position = 'fixed'
+                        textarea.style.opacity = '0'
+                        document.body.appendChild(textarea)
+                        textarea.select()
+                        document.execCommand('copy')
+                        document.body.removeChild(textarea)
+                        this.$message.success(`${fieldName}内容已复制到剪贴板`)
+                    }
+                } catch (error) {
+                    console.error('复制失败:', error)
+                    this.$message.error('复制失败，请手动选择内容复制')
+                }
+            },
+            
             setFull(){
                 this.isFull=!this.isFull
                 window.dispatchEvent(new Event('resize'))
@@ -347,6 +577,19 @@
             },
             handleGenerate(row) {
                 let vm = this
+                
+                // 检查开始时间和结束时间是否存在
+                if (!row.start_time || !row.end_time) {
+                    vm.$message.warning('开始时间或结束时间未设置，无法制作License')
+                    return
+                }
+                
+                // 检查结束时间是否已过期
+                if (this.isEndTimeExpired(row.end_time)) {
+                    vm.$message.warning('结束时间已过期，无法制作License')
+                    return
+                }
+                
                 vm.$confirm('确认要制作该License吗？系统将读取JSON文件并生成License。', {
                     confirmButtonText: '确定',
                     cancelButtonText: '取消',
@@ -607,4 +850,78 @@
 </script>
 
 <style lang="scss" scoped>
+// 禁用的按钮样式
+.disabled-btn {
+    color: #c0c4cc !important;
+    cursor: not-allowed !important;
+    opacity: 0.6;
+    
+    &:hover {
+        color: #c0c4cc !important;
+    }
+}
+
+// 可展开内容的样式
+.expandable-content {
+    position: relative;
+    
+    pre {
+        overflow: hidden;
+        transition: max-height 0.3s ease;
+        white-space: pre-wrap;  // 保留换行和空格，但允许自动换行
+        word-break: break-all;  // 长单词或URL可以换行
+        
+        // 收起状态下的提示文字样式
+        &.collapsed {
+            ::v-deep .more-items-hint {
+                color: #909399;  // 灰色，表示还有更多内容
+                font-style: italic;
+                font-weight: 500;
+            }
+        }
+        
+        &.expanded {
+            max-height: 2000px;  // 展开后的高度，足够显示大量内容
+            overflow-y: auto;  // 内容过多时显示滚动条
+        }
+    }
+    
+    .expand-btn-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 4px;
+    }
+    
+    .expand-btn,
+    .copy-btn {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: #409eff;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        transition: all 0.2s;
+        
+        &:hover {
+            color: #66b1ff;
+            background-color: #ecf5ff;
+        }
+        
+        .el-icon {
+            font-size: 14px;
+        }
+    }
+    
+    .copy-btn {
+        color: #67c23a;
+        
+        &:hover {
+            color: #85ce61;
+            background-color: #f0f9eb;
+        }
+    }
+}
 </style>

@@ -535,4 +535,4 @@ API_MODEL_MAP = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-JSON_FILE_PATH = "D:\eladmin"
+JSON_FILE_PATH = r"D:\eladmin"

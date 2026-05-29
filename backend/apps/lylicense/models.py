@@ -30,7 +30,7 @@ class LicenseApplication(BaseModel):
     # 功能特性
     feature = models.JSONField(null=True, blank=True, verbose_name="Feature列表")  # 存储 Feature 名称列表
     product = models.CharField(max_length=200, null=True, blank=True, verbose_name="产品名称")
-    serial_number = models.CharField(max_length=100, null=True, blank=True, verbose_name="序列号")
+    serial_number = models.CharField(max_length=100, null=True, blank=True, verbose_name="申请序列号", help_text="申请序列号，允许多个产品共享同一序列号")
     keyword = models.CharField(max_length=200, null=True, blank=True, verbose_name="关键字/匹配标识")  # 用于与映射表中的selectField字段匹配
     
     # 客户信息
@@ -46,6 +46,9 @@ class LicenseApplication(BaseModel):
     # JSON原始数据
     json_data = models.JSONField(null=True, blank=True, verbose_name="JSON原始数据")
     
+    # 文件唯一标识（用于防止重复处理）
+    file_hash = models.CharField(max_length=64, null=True, blank=True, verbose_name="文件哈希值", help_text="文件内容的MD5哈希，用于防止相同文件重复处理")
+    
     # 制作状态
     status = models.IntegerField(default=0, choices=STATUS, verbose_name="状态")
     
@@ -59,6 +62,8 @@ class LicenseApplication(BaseModel):
         verbose_name = "License申请"
         verbose_name_plural = verbose_name
         ordering = ['-create_datetime']
+        # 联合唯一约束：同一文件的同一产品只能有一条申请记录
+        unique_together = ['file_hash', 'product']
 
 class LicenseRecord(BaseModel):
     """
@@ -168,6 +173,7 @@ class LicenseFieldMapping(CoreModel):
     # 字段映射信息
     license_type = models.CharField(max_length=20, choices=LICENSE_TYPE, verbose_name="License类型")
     user_type = models.CharField(max_length=20, choices=USER_TYPE, verbose_name="用户类型")
+    product = models.CharField(max_length=100, null=True, blank=True, verbose_name="产品名称", help_text="用于将相同产品的feature归类，如 GloryEX、GloryBolt")
     field_type = models.CharField(max_length=20, choices=FIELD_TYPE, default='common', verbose_name="字段类型")
     field = models.CharField(max_length=100, verbose_name="原始字段名")
     name = models.CharField(max_length=200, verbose_name="字段含义")
@@ -184,7 +190,7 @@ class LicenseFieldMapping(CoreModel):
         db_table = 'lylicense_field_mapping'
         verbose_name = "License字段映射"
         verbose_name_plural = verbose_name
-        ordering = ['license_type', 'user_type', 'field_type', 'field']
+        ordering = ['license_type', 'user_type', 'product', 'field_type', 'field']
         unique_together = ['license_type', 'user_type', 'field']
     
     def __str__(self):

@@ -43,6 +43,12 @@
                 </el-table-column>
                 <el-table-column min-width="120" prop="license_type_name" label="License类型" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="100" prop="user_type_name" label="用户类型" show-overflow-tooltip></el-table-column>
+                <el-table-column min-width="120" prop="product" label="产品名称" show-overflow-tooltip>
+                    <template #default="scope">
+                        <el-tag v-if="scope.row.product" type="primary" size="small">{{ scope.row.product }}</el-tag>
+                        <span v-else style="color: #909399;">-</span>
+                    </template>
+                </el-table-column>
                 <el-table-column min-width="120" prop="field_type_name" label="字段类型" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="150" prop="field" label="原始字段名" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="200" prop="name" label="字段含义" show-overflow-tooltip></el-table-column>
@@ -97,6 +103,24 @@
                         <el-option label="内部" value="internal"></el-option>
                         <el-option label="外部" value="external"></el-option>
                     </el-select>
+                </el-form-item>
+                <el-form-item label="产品名称" prop="product">
+                    <el-select v-model="form.product" placeholder="请选择产品" style="width: 100%" clearable>
+                        <el-option label="GloryBolt" value="GloryBolt"></el-option>
+                        <el-option label="GloryEX" value="GloryEX"></el-option>
+                        <el-option label="GloryEX3D" value="GloryEX3D"></el-option>
+                        <el-option label="GloryGrid" value="GloryGrid"></el-option>
+                        <el-option label="GloryEye" value="GloryEye"></el-option>
+                        <el-option label="GloryWatt" value="GloryWatt"></el-option>
+                        <el-option label="GloryPolaris" value="GloryPolaris"></el-option>
+                        <el-option label="PhyBolt" value="PhyBolt"></el-option>
+                        <el-option label="GloryLink" value="GloryLink"></el-option>
+                        <el-option label="verilog2def" value="verilog2def"></el-option>
+                        <el-option label="verilog2spef" value="verilog2spef"></el-option>
+                    </el-select>
+                    <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+                        提示：选择产品后，该字段的feature将被归类到该产品下
+                    </div>
                 </el-form-item>
                 <el-form-item label="字段类型" prop="field_type">
                     <el-select v-model="form.field_type" placeholder="请选择字段类型" style="width: 100%">
@@ -166,10 +190,12 @@
                     id: '',
                     license_type: '',
                     user_type: '',
+                    product: '',  // 新增：产品名称
                     field_type: 'common',
                     field: '',
                     name: '',
                     real_key: '',
+                    remark: '',  // 新增：备注
                     is_deleted: false
                 },
                 rules: {
@@ -244,6 +270,7 @@
                         id: '',
                         license_type: '',
                         user_type: '',
+                        product: '',  // 新增：产品名称
                         field_type: 'common',
                         field: '',
                         name: '',
@@ -263,6 +290,7 @@
                         id: row.id,
                         license_type: row.license_type,
                         user_type: row.user_type,
+                        product: row.product || '',  // 新增：产品名称
                         field_type: row.field_type,
                         field: row.field,
                         name: row.name,

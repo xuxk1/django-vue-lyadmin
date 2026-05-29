@@ -5,8 +5,15 @@ License 文件监听器
 import os
 import time
 import logging
+import sys
 from pathlib import Path
-from watchdog.observers import Observer
+
+# Windows系统下使用PollingObserver更稳定
+if sys.platform == 'win32':
+    from watchdog.observers.polling import PollingObserver as Observer
+else:
+    from watchdog.observers import Observer
+
 from watchdog.events import FileSystemEventHandler
 
 logger = logging.getLogger(__name__)
@@ -34,12 +41,15 @@ class LicenseFileHandler(FileSystemEventHandler):
             event: 文件系统事件
         """
         if event.is_directory:
+            logger.debug(f"忽略目录创建事件: {event.src_path}")
             return
         
         file_path = event.src_path
+        logger.info(f"检测到文件创建事件: {file_path}")
         
         # 只处理 .txt 和 .json 文件
         if not (file_path.endswith('.txt') or file_path.endswith('.json')):
+            logger.debug(f"忽略非目标文件: {file_path}")
             return
         
         logger.info(f"检测到新文件: {file_path}")
@@ -54,8 +64,11 @@ class LicenseFileHandler(FileSystemEventHandler):
         
         try:
             # 调用回调函数处理文件
+            logger.info(f"准备调用回调函数处理文件: {file_path}")
             if self.process_callback:
+                logger.info(f"回调函数存在，开始调用...")
                 result = self.process_callback(file_path)
+                logger.info(f"回调函数返回结果: {result}")
                 if result:
                     self.processed_files.add(file_path)
                     logger.info(f"文件处理成功: {file_path}")
@@ -131,5 +144,5 @@ if __name__ == '__main__':
         print(f"处理文件: {file_path}")
         return True
     
-    watch_dir = r"D:\eladmin\django-vue-lyadmin\backend\license_data\incoming"
+    watch_dir = r"D:\eladmin\license_data"
     start_file_watcher(watch_dir, test_process_file)

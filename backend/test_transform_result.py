@@ -24,19 +24,18 @@ def process_json_file(file_path):
         raw_json = json.load(f)
     
     # 获取 LicenseType
-    license_type_raw = raw_json.get('LicenseType', '').upper()
-    if license_type_raw == 'FLEXNET':
-        license_type = 'flexnet'
-    elif license_type_raw == 'BITANSWER':
-        license_type = 'bitanswer'
-    else:
-        print(f"✗ 不支持的 License 类型: {license_type_raw}")
-        return None
-    
+    license_type = raw_json.get('LicenseType', '').lower()
+    usage = raw_json.get('Usage', '').lower()
+    user_type = ''
+    if usage:
+        if usage == '内部':
+            user_type = 'internal'
+        elif usage == '外部':
+            user_type = 'external'
     print(f"License 类型: {license_type}")
     
     # 调用转换函数
-    result = transform_json_with_mapping(raw_json, license_type, 'external')
+    result = transform_json_with_mapping(raw_json, license_type, user_type)
     transformed_data = result['transformed_data']
     features = result['features']
     feature_values = result['feature_values']
@@ -209,7 +208,7 @@ def process_json_file(file_path):
         json_dir = os.path.join(settings.BASE_DIR, 'license_data')
         if not os.path.exists(json_dir):
             os.makedirs(json_dir)
-        
+
         json_file_path = os.path.join(json_dir, f'{application.id}.json')
         with open(json_file_path, 'w', encoding='utf-8') as f:
             json.dump(transformed_data, f, ensure_ascii=False, indent=2)
