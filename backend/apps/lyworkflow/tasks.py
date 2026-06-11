@@ -14,7 +14,7 @@ def send_workflow_notification(user_id, instance_id, notification_type):
     """
     try:
         from apps.lyworkflow.models import WorkflowInstance, Users
-        from apps.lymessages.models import Message
+        from apps.lymessages.models import MyMessage, MyMessageUser
         
         user = Users.objects.get(id=user_id)
         instance = WorkflowInstance.objects.get(id=instance_id)
@@ -43,11 +43,20 @@ def send_workflow_notification(user_id, instance_id, notification_type):
             message_content = f'流程状态更新：{instance.title}'
         
         # 创建站内消息
-        Message.objects.create(
-            title=message_title,
-            content=message_content,
-            to_user=user,
-            message_type=1  # 系统消息
+        message = MyMessage.objects.create(
+            msg_title=message_title,
+            msg_content=message_content,
+            msg_chanel=1,  # 系统通知
+            public=False,
+            status=True
+        )
+        
+        # 创建用户消息关联
+        MyMessageUser.objects.create(
+            messageid=message,
+            revuserid=user,
+            is_read=False,
+            is_delete=False
         )
         
         logger.info(f'发送流程通知成功：用户{user.name}，流程{instance.instance_no}，类型{notification_type}')

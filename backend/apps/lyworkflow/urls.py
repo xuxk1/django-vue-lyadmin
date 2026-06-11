@@ -7,6 +7,7 @@ from .views import (
     WorkflowInstanceViewSet,
     WorkflowTaskViewSet,
     WorkflowLogViewSet,
+    WorkflowDashboardViewSet,
 )
 
 router = DefaultRouter()
@@ -16,6 +17,7 @@ router.register(r'workflow-cc', WorkflowCCViewSet, basename='workflow-cc')
 router.register(r'workflow-instance', WorkflowInstanceViewSet, basename='workflow-instance')
 router.register(r'workflow-task', WorkflowTaskViewSet, basename='workflow-task')
 router.register(r'workflow-log', WorkflowLogViewSet, basename='workflow-log')
+router.register(r'workflow-dashboard', WorkflowDashboardViewSet, basename='workflow-dashboard')
 
 urlpatterns = [
     path('', include(router.urls)),

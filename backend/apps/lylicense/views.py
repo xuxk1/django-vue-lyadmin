@@ -1,11 +1,14 @@
 import os
 import json
 import logging
+import paramiko
 from django.utils import timezone
 from django.conf import settings
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status as http_status
+
+import config
 from utils.viewset import CustomModelViewSet
 from utils.jsonResponse import SuccessResponse, ErrorResponse
 from apps.lylicense.models import LicenseApplication, LicenseRecord, LicenseFieldMapping
@@ -26,6 +29,180 @@ _file_watcher_observer = None
 # 从Django settings中获取路径
 BASE_DIR = settings.BASE_DIR
 MEDIA_ROOT = settings.MEDIA_ROOT
+
+
+def _execute_remote_lmcrypt(template_file_path, product_name):
+    """
+    通过 SSH 远程执行 lmcrypt_new 脚本生成正式 license 文件
+    
+    Args:
+        template_file_path: 本地预制作 license 模板文件路径
+        product_name: 产品名称
+    
+    Returns:
+        dict: 执行结果
+            {
+                'success': bool,
+                'remote_license_path': str,  # 远程服务器上的正式 license 文件路径
+                'error': str  # 错误信息（如果失败）
+            }
+    """
+    remote_template_dir = ''
+    remote_license_filename = ''
+    try:
+        # SSH 连接配置
+        ssh_host = config.SSH_HOST
+        ssh_user = config.SSH_USER
+        ssh_password = config.SSH_PASSWORD  # 使用免密登录（密钥认证）
+        ssh_key_file = config.SSH_KEY_FILE  # 如果有密钥文件可以指定，否则使用默认 ~/.ssh/id_rsa
+        
+        # 远程服务器上的路径
+        remote_template_dir = config.SSH_REMOTE_TEMPLATE_DIR
+        remote_script_path = config.SSH_REMOTE_SCRIPT_PATH
+        
+        logger.info(f"准备远程执行 lmcrypt_new 脚本: {template_file_path}")
+        
+        # 创建 SSH 客户端
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        # 连接 SSH
+        if ssh_key_file:
+            ssh.connect(ssh_host, username=ssh_user, key_filename=ssh_key_file)
+        else:
+            ssh.connect(ssh_host, username=ssh_user)
+        
+        logger.info(f"SSH 连接成功: {ssh_host}")
+        
+        # 步骤 1: 通过 SFTP 上传预制作模板文件
+        sftp = ssh.open_sftp()
+        
+        # 提取文件名
+        template_filename = os.path.basename(template_file_path)
+        remote_template_file = os.path.join(remote_template_dir, template_filename)
+        
+        logger.info(f"上传预制作模板文件: {template_file_path} -> {remote_template_file}")
+        sftp.put(template_file_path, remote_template_file)
+        logger.info("文件上传成功")
+        
+        # 步骤 2: 远程执行 lmcrypt_new 脚本
+        # 注意：lmcrypt_new 脚本会在当前目录生成 license 文件，文件名与输入文件相同
+        cmd = f"cd {remote_template_dir} && {remote_script_path} {template_filename}"
+        logger.info(f"远程执行命令: {cmd}")
+        
+        # 执行命令
+        stdin, stdout, stderr = ssh.exec_command(cmd)
+        
+        # 获取命令输出
+        output = stdout.read().decode('utf-8')
+        error_output = stderr.read().decode('utf-8')
+        exit_status = stdout.channel.recv_exit_status()
+        
+        if exit_status == 0:
+            logger.info(f"远程 lmcrypt_new 执行成功: {output}")
+            
+            # 步骤 3: 下载生成的正式 license 文件回本地
+            # lmcrypt_new 脚本会就地修改文件，所以生成的文件名与模板文件名相同
+            remote_license_path = remote_template_file  # 远程文件路径
+            
+            # 创建本地目录
+            license_dir = os.path.join(MEDIA_ROOT, 'license', 'flexnet')
+            if not os.path.exists(license_dir):
+                os.makedirs(license_dir)
+            
+            local_license_path = os.path.join(license_dir, template_filename)
+            
+            logger.info(f"下载正式 license 文件: {remote_license_path} -> {local_license_path}")
+            sftp.get(remote_license_path, local_license_path)
+            logger.info(f"文件下载成功: {local_license_path}")
+            
+            # 关闭 SFTP 连接
+            sftp.close()
+            
+            return {
+                'success': True,
+                'local_license_path': local_license_path,
+                'remote_license_path': remote_license_path,
+                'output': output
+            }
+        else:
+            error_msg = f"远程命令执行失败，退出码: {exit_status}, 错误: {error_output}"
+            logger.error(error_msg)
+            return {
+                'success': False,
+                'error': error_msg
+            }
+    
+    except paramiko.AuthenticationException:
+        error_msg = "SSH 认证失败，请检查密钥配置"
+        logger.error(error_msg)
+        return {
+            'success': False,
+            'error': error_msg
+        }
+    except paramiko.SSHException as e:
+        error_msg = f"SSH 连接失败: {str(e)}"
+        logger.error(error_msg)
+        return {
+            'success': False,
+            'error': error_msg
+        }
+    except Exception as e:
+        error_msg = f"远程执行失败: {str(e)}"
+        logger.error(error_msg)
+        return {
+            'success': False,
+            'error': error_msg
+        }
+    finally:
+        # 关闭 SFTP 连接
+        if 'sftp' in locals() and sftp:
+            try:
+                sftp.close()
+            except:
+                pass
+        # 关闭 SSH 连接
+        if 'ssh' in locals() and ssh:
+            try:
+                ssh.close()
+            except:
+                pass
+
+
+def get_applicant_from_transformed_data(transformed_data, license_type, user_type, field_name='ApplicantID'):
+    """
+    从转换后的 JSON 数据中获取申请人账号
+    
+    实现逻辑：
+    转换后的数据中，字段名已经使用 real_key（如 ApplicantID 或 Applicant）
+    直接用指定的 field_name 作为 key 从转换后的数据中获取值
+    
+    Args:
+        transformed_data: 转换后的 JSON 数据（字典）
+        license_type: License类型 ('flexnet' 或 'bitanswer')
+        user_type: 用户类型 ('internal' 或 'external')
+        field_name: 字段名称，默认 'ApplicantID'（用于邮件），也可以传 'Applicant'（用于记录）
+    
+    Returns:
+        str: 申请人账号，如果未找到则返回空字符串
+    """
+    try:
+        # 直接从转换后的数据中获取指定字段的值
+        applicant = transformed_data.get(field_name, '')
+        
+        if applicant:
+            # 如果提取到的是列表，取第一个元素
+            if isinstance(applicant, list) and len(applicant) > 0:
+                applicant = applicant[0]
+            logger.info(f"从转换后的数据中提取到申请人: {applicant} (key: {field_name})")
+            return applicant
+        else:
+            logger.warning(f"转换后的数据中未找到 {field_name}，applicant={applicant}")
+        
+        return ''
+    except Exception as e:
+        logger.error(f"提取申请人账号失败: {str(e)}")
+        return ''
 
 
 def transform_json_with_mapping(raw_json, license_type, user_type='external'):
@@ -85,10 +262,17 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
             'product': m.product or ''  # 新增：产品名称
         }
     
-    # 提取并列字段
+    # 提取并列字段：FormList、Usage、LicenseType 必须是并列关系
+    if 'FormList' not in raw_json:
+        raise ValueError(f"JSON格式错误：缺少 'FormList' 字段")
+    if 'Usage' not in raw_json:
+        raise ValueError(f"JSON格式错误：缺少 'Usage' 字段")
+    if 'LicenseType' not in raw_json:
+        raise ValueError(f"JSON格式错误：缺少 'LicenseType' 字段")
+    
     form_list = raw_json.get('FormList', {})
     usage = raw_json.get('Usage', '')
-    license_type = raw_json.get('LicenseType', '').lower()
+    license_type_from_json = raw_json.get('LicenseType', '').lower()
 
     if usage:
         if usage == '内部':
@@ -99,8 +283,19 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
     if not form_list:
         return {
             'transformed_data': {},
+            'features': [],
+            'feature_values': {},
+            'user_info_list': [],
+            'mac_address': '',
+            'hostname': '',
+            'product_features': {},
+            'product_set': [],
             'usage': user_type,
-            'license_type': license_type
+            'license_type': license_type_from_json,
+            'original_keys_count': 0,
+            'filtered_keys_count': 0,
+            'mapping_used': len(field_mapping),
+            'success': True
         }
     
     # 存储转换后的数据
@@ -215,11 +410,16 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
                     transformed_row[real_key] = value
                 else:
                     # 其他类型字段，使用 real_key
-                    transformed_row[real_key] = value
+                    # 如果值是列表且字段名是 ApplicantID，提取第一个元素（避免 ["value"] 格式）
+                    if isinstance(value, list) and len(value) > 0 and real_key == 'ApplicantID':
+                        transformed_row[real_key] = value[0]
+                    else:
+                        transformed_row[real_key] = value
             else:
-                # 不在映射表中的字段，使用原 key（这是问题所在！）
-                # 我们应该记录日志，帮助调试
-                logger.warning(f"表格字段 {key} 不在映射表中，使用原始 key")
+                # 不在映射表中，检查是否是表格字段的子字段（通常不需要映射）
+                # 忽略 selectField 等表格相关字段的警告
+                if not key.startswith(('selectField_', 'dateField_')):
+                    logger.warning(f"字段 {key} 不在映射表中，使用原始 key")
                 transformed_row[key] = value
         
         return transformed_row
@@ -297,7 +497,11 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
                         transformed_data[table_real_key] = transformed_rows
                 else:
                     # 普通字段，直接保存，使用 real_key 作为 key
-                    transformed_data[real_key] = value
+                    # 如果值是列表且字段名是 ApplicantID，提取第一个元素（避免 ["value"] 格式）
+                    if isinstance(value, list) and len(value) > 0 and real_key == 'ApplicantID':
+                        transformed_data[real_key] = value[0]
+                    else:
+                        transformed_data[real_key] = value
         else:
             # 不在映射表中的字段，检查是否是表格字段（list 类型）
             if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
@@ -374,11 +578,13 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
     # 构建 UserInfo 结构
     user_info_list = []
     
-    # 从 transformed_data 中提取 UserInfo 的基础信息（全局的，作为 fallback）
+
     mac_address = transformed_data.get('MacAddress', '')
     if mac_address:
         mac_address = mac_address.upper()
     hostname = transformed_data.get('Hostname', '')
+
+    # 从 transformed_data 中提取 UserInfo 的基础信息（全局的，作为 fallback）
     start_timestamp = transformed_data.get('Startdate', 0)
     end_timestamp = transformed_data.get('Expirydate', 0)
     product_name = transformed_data.get('Product', '')
@@ -413,7 +619,7 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
             base_info = product_base_info.get(product, {})
             user_info_entry = {
                 # 'MacAddress': base_info.get('MacAddress', mac_address),
-                'Hostname': base_info.get('Hostname', hostname),
+                # 'Hostname': base_info.get('Hostname', hostname),
                 'Expirydate': base_info.get('Expirydate', end_timestamp),
                 'Startdate': base_info.get('Startdate', start_timestamp),
                 'Product': product,
@@ -435,7 +641,7 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
     result = {
         'transformed_data': transformed_data,
         'usage': usage,
-        'license_type': license_type,
+        'license_type': license_type_from_json,  # 使用从JSON中提取的license_type
         'features': features,
         'feature_values': feature_values,
         'product_features': product_features,  # 新增：按产品分组的 Feature
@@ -474,6 +680,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
         5. 过滤空值
         6. 创建申请记录
         """
+        user_type = ''
         try:
             # 固定目录：BASE_DIR/license_txt_files
             txt_dir = os.path.join(BASE_DIR, 'license_txt_files')
@@ -545,6 +752,10 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     transformed_data = transform_result['transformed_data']
                     features = transform_result.get('features', [])
                     feature_values = transform_result.get('feature_values', {})
+                    product_features = transform_result.get('product_features', {})
+                    user_info_list = transform_result.get('user_info_list', [])
+                    mac_address = transform_result.get('mac_address', '')
+                    hostname = transform_result.get('hostname', '')
                                     
                     # 从数据库动态获取字段映射关系
                     mappings = LicenseFieldMapping.objects.filter(
@@ -640,6 +851,14 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     if mac_address:
                         mac_address = mac_address.replace(':', '')
                     
+                    # 提取申请人ID（用于邮件发送）
+                    applicant_id = get_applicant_from_transformed_data(
+                        transformed_data=transformed_data,
+                        license_type=license_type,
+                        user_type=user_type,  # 使用从JSON解析的user_type，而不是硬编码'external'
+                        field_name='ApplicantID'
+                    )
+                    
                     # 检查序列号是否已存在（防止重复申请）
                     if serial_number:
                         existing_application = LicenseApplication.objects.filter(
@@ -660,6 +879,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     # 创建申请记录
                     application = LicenseApplication.objects.create(
                         applicant=applicant or '未知申请人',
+                        applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
                         application_type=license_type,
                         feature=features if features else [],  # Feature 列表
                         product=product or '',  # 产品名称
@@ -732,12 +952,12 @@ class LicenseApplicationViewSet(CustomModelViewSet):
         try:
             if '_file_watcher_observer' not in globals() or _file_watcher_observer is None:
                 return ErrorResponse(msg='文件监听器未运行')
-            
+
             # 停止监听器
             _file_watcher_observer.stop()
             _file_watcher_observer.join(timeout=5)
             _file_watcher_observer = None
-            
+
             logger.info("文件监听器已停止")
             return SuccessResponse(msg='文件监听器已停止')
             
@@ -827,7 +1047,36 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     except json.JSONDecodeError as e:
                         logger.error(f"JSON 解析失败: {file_path}")
                         logger.error(f"JSON 错误详情: {str(e)}")
-                        logger.error(f"错误位置: 行 {e.lineno}, 列 {e.colno}")
+                        logger.error(f"错误位置: 行 {getattr(e, 'lineno', 'N/A')}, 列 {getattr(e, 'colno', 'N/A')}")
+                        logger.info(f"准备发送 JSON 解析失败邮件...")
+                        
+                        # 发送 JSON 解析失败邮件
+                        try:
+                            logger.info(f"[邮件发送] 步骤1: 开始发送邮件")
+                            
+                            from utils.email import EmailManager
+                            logger.info(f"[邮件发送] 步骤2: 导入 EmailManager 成功")
+                            
+                            # JSON 解析失败时，直接发送给指定人员
+                            owner_account = config.MAIL_RECIPIENT  # 固定接收人
+                            logger.info(f"[邮件发送] 步骤3: 邮件接收人: {owner_account}")
+                            
+                            # 直接使用原始内容，因为 JSON 已经解析失败，无法再次解析
+                            formatted_json = content
+                            logger.info(f"[邮件发送] 步骤4: JSON 内容长度: {len(formatted_json)} 字符")
+                            
+                            email_manager = EmailManager()
+                            logger.info(f"[邮件发送] 步骤5: EmailManager 实例创建成功")
+                            
+                            # 提取文件名（从完整路径中）
+                            import os
+                            file_name = os.path.basename(file_path)
+                            email_manager.json_parsing_failed_send_email(owner_account, formatted_json, file_name)
+                            logger.info(f"[邮件发送] 步骤6: 已发送 JSON 解析失败邮件给: {owner_account}，文件名: {file_name}")
+                        except Exception as email_err:
+                            logger.error(f"[邮件发送] 发送邮件失败: {str(email_err)}", exc_info=True)
+                        
+                        logger.info(f"JSON 解析失败处理完成，返回 False")
                         return False
                     except Exception as e:
                         logger.error(f"读取文件失败: {file_path}")
@@ -843,34 +1092,22 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     # 调用转换函数
                     result = transform_json_with_mapping(json_data, license_type=license_type, user_type=user_type)
                     
-                    if not result['success']:
+                    if not result.get('success'):
                         logger.error(f"转换失败: {result.get('error')}")
                         return False
                     
-                    transformed_data = result['transformed_data']  # 修复：使用正确的键名
-                    features = result['features']
-                    product_features = result['product_features']  # 直接使用product_features作为quantity
-                    user_info_list = result['transformed_data'].get('UserInfo', [])  # 获取UserInfo列表
+                    transformed_data = result['transformed_data']
+                    features = result.get('features', [])
+                    product_features = result.get('product_features', {})
+                    user_info_list = result.get('user_info_list', [])
+                    mac_address = result.get('mac_address', '')
+                    hostname = result.get('hostname', '')
                     
                     # 从 transformed_data 中提取全局的 mac_address 和 hostname（作为 fallback）
                     mac_address = transformed_data.get('MacAddress', '')
                     if mac_address:
                         mac_address = mac_address.upper()
                     hostname = transformed_data.get('Hostname', '')
-                    
-                    # 打印转换后的数据，方便核对
-                    logger.info(f"\n{'='*80}")
-                    logger.info(f"转换后的 transformed_data:")
-                    logger.info(json.dumps(transformed_data, ensure_ascii=False, indent=2))
-                    logger.info(f"{'='*80}\n")
-                    
-                    logger.info(f"UserInfo 列表包含 {len(user_info_list)} 个产品:")
-                    for idx, ui in enumerate(user_info_list, 1):
-                        logger.info(f"  {idx}. Product: {ui.get('Product')}, MacAddress: {ui.get('MacAddress')}, Hostname: {ui.get('Hostname')}")
-                        logger.info(f"     Startdate: {ui.get('Startdate')}, Expirydate: {ui.get('Expirydate')}")
-                    logger.info(f"\nproduct_features 结构:")
-                    logger.info(json.dumps(product_features, ensure_ascii=False, indent=2))
-                    logger.info(f"{'='*80}\n")
                     
                     # 提取公共数据
                     applicant = None
@@ -884,12 +1121,48 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                         elif key == 'CustomerName':
                             customer_name = value
                         elif key == 'Applicant':
-                            applicant = value[0]
+                            applicant = value
                     
                     # 检查序列号是否为空
                     if not serial_number:
                         logger.warning(f'序列号为空，跳过处理文件: {file_path}')
                         return False
+                    
+                    # 在创建申请记录之前，为每个产品生成独立的 FlexNet 预制作 license 模板文件
+                    flexnet_template_files = {}  # {product: template_file_path}
+                    if license_type == 'flexnet':
+                        try:
+                            # 遍历每个产品，为其生成独立的 .lic 文件
+                            for product, product_feats in product_features.items():
+                                if not product_feats:
+                                    continue
+                                
+                                # 从 user_info 中获取 keyword（如果有的话）
+                                product_keyword = None
+                                for ui in user_info_list:
+                                    if ui.get('Product') == product:
+                                        product_keyword = ui.get('Keyword')
+                                        break
+                                
+                                template_file_path = _generate_flexnet_template_file(
+                                    serial_number=serial_number,
+                                    mac_address=mac_address,
+                                    hostname=hostname,
+                                    product_name=product,
+                                    product_features={product: product_feats},  # 只传入当前产品的 features
+                                    user_info_list=user_info_list,
+                                    file_hash=file_hash,
+                                    keyword=product_keyword  # 传递 keyword
+                                )
+                                if template_file_path:
+                                    flexnet_template_files[product] = template_file_path
+                                    logger.info(f"产品 {product} 的 FlexNet 预制作模板文件已生成: {template_file_path}")
+                            
+                            if flexnet_template_files:
+                                logger.info(f"共生成 {len(flexnet_template_files)} 个 FlexNet 预制作模板文件")
+                        except Exception as e:
+                            logger.error(f"生成 FlexNet 预制作模板文件失败: {str(e)}", exc_info=True)
+                            # 不阻断流程，继续创建申请记录
                     
                     # 特殊产品分组：GloryEX、GloryEX3D、GloryPolaris 合并为一个申请记录
                     gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris']
@@ -948,6 +1221,14 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                             # 处理MAC地址：在最外层已经处理过了，直接使用
                             # mac_address 变量在第378行已经提取并处理
 
+                            # 提取申请人ID（用于邮件发送）
+                            applicant_id = get_applicant_from_transformed_data(
+                                transformed_data=transformed_data,
+                                license_type=license_type,
+                                user_type=user_type,  # 使用从JSON解析的user_type，而不是硬编码'external'
+                                field_name='ApplicantID'
+                            )
+
                             # 检查该产品的申请记录是否已存在
                             if LicenseApplication.objects.filter(file_hash=file_hash, product='GloryEX').exists():
                                 logger.info(f'GloryEX产品申请记录已存在（文件哈希: {file_hash}），跳过创建')
@@ -955,6 +1236,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                 # 创建GloryEX组的申请记录
                                 application = LicenseApplication.objects.create(
                                     applicant=applicant or '未知申请人',
+                                    applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
                                     application_type=license_type,
                                     feature=gloryex_feature_list if gloryex_feature_list else [],
                                     product='GloryEX',  # 统一使用GloryEX作为产品名
@@ -972,6 +1254,72 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                 )
                                 created_applications.append(application.id)
                                 logger.info(f"创建GloryEX组申请记录成功，ID: {application.id}，包含产品: {', '.join([p for p in gloryex_group_products if p in product_features])}")
+                                
+                                # 检查结束时间是否即将过期（小于30天）
+                                from datetime import datetime, timedelta
+                                if max_end_time:
+                                    days_until_expiry = (max_end_time - datetime.now()).days
+                                    if days_until_expiry < 30:
+                                        logger.warning(f"GloryEX组 License 将在 {days_until_expiry} 天后过期 ({max_end_time})，发送提醒邮件")
+                                        try:
+                                            from utils.email import EmailManager
+                                            
+                                            # 通过映射表从转换后的数据中获取申请人账号
+                                            owner_account = get_applicant_from_transformed_data(
+                                                transformed_data, license_type, user_type
+                                            )
+                                            
+                                            if not owner_account:
+                                                logger.warning("未获取到申请人账号，使用默认值")
+                                                owner_account = config.MAIL_RECIPIENT
+                                            
+                                            # 发送即将过期提醒邮件
+                                            email_manager = EmailManager()
+                                            email_manager.license_expired_send_email(owner_account, application, max_end_time)
+                                            logger.info(f"已发送 License 即将过期提醒邮件给: {owner_account}")
+                                        except Exception as email_err:
+                                            logger.error(f"发送过期提醒邮件失败: {str(email_err)}")
+                                
+                                # 如果是 FlexNet 类型，立即生成 license 文件
+                                if license_type == 'flexnet':
+                                    try:
+                                        # 获取对应的预制作模板文件路径（使用第一个产品的模板）
+                                        template_file = None
+                                        for group_product in gloryex_group_products:
+                                            if group_product in flexnet_template_files:
+                                                template_file = flexnet_template_files[group_product]
+                                                break
+                                        
+                                        if template_file:
+                                            # 将相对路径转换为绝对路径
+                                            abs_template_file = os.path.join(MEDIA_ROOT, template_file)
+                                            gen_result = self._generate_flexnet_license(
+                                                instance=application,
+                                                json_data=json_data,
+                                                template_file_path=abs_template_file
+                                            )
+                                            if gen_result.get('success'):
+                                                logger.info(f"GloryEX组 License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                            else:
+                                                logger.error(f"GloryEX组 License 文件生成失败: {gen_result.get('error')}")
+                                        else:
+                                            logger.warning(f"未找到 GloryEX 组的预制作模板文件，跳过 License 生成")
+                                    except Exception as e:
+                                        logger.error(f"生成 GloryEX组 License 文件异常: {str(e)}", exc_info=True)
+                                
+                                # 如果是 Bitanswer 类型，直接调用 API 生成 license 文件
+                                elif license_type == 'bitanswer':
+                                    try:
+                                        gen_result = self._generate_bitanswer_license(
+                                            instance=application,
+                                            json_data=json_data
+                                        )
+                                        if gen_result.get('success'):
+                                            logger.info(f"GloryEX组 Bitanswer License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                        else:
+                                            logger.error(f"GloryEX组 Bitanswer License 文件生成失败: {gen_result.get('error')}")
+                                    except Exception as e:
+                                        logger.error(f"生成 GloryEX组 Bitanswer License 文件异常: {str(e)}", exc_info=True)
                         else:
                             # 其他产品单独创建申请记录
                             product_feats = product_features.get(product, {})
@@ -993,12 +1341,21 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                             # 处理MAC地址：在最外层已经处理过了，直接使用
                             # mac_address 变量在第378行已经提取并处理
                             
+                            # 提取申请人ID（用于邮件发送）
+                            applicant_id = get_applicant_from_transformed_data(
+                                transformed_data=transformed_data,
+                                license_type=license_type,
+                                user_type=user_type,  # 使用从JSON解析的user_type，而不是硬编码'external'
+                                field_name='ApplicantID'
+                            )
+                            
                             # 检查该产品的申请记录是否已存在
                             if LicenseApplication.objects.filter(file_hash=file_hash, product=product).exists():
                                 logger.info(f'产品{product}申请记录已存在（文件哈希: {file_hash}），跳过创建')
                             else:
                                 application = LicenseApplication.objects.create(
                                     applicant=applicant or '未知申请人',
+                                    applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
                                     application_type=license_type,
                                     feature=feat_list if feat_list else [],
                                     product=product,
@@ -1017,6 +1374,68 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                 created_applications.append(application.id)
                                 processed_products.add(product)
                                 logger.info(f"创建产品{product}申请记录成功，ID: {application.id}")
+                                
+                                # 检查结束时间是否即将过期（小于30天）
+                                from datetime import datetime, timedelta
+                                if end_time:
+                                    days_until_expiry = (end_time - datetime.now()).days
+                                    if days_until_expiry < 30:
+                                        logger.warning(f"产品 {product} License 将在 {days_until_expiry} 天后过期 ({end_time})，发送提醒邮件")
+                                        try:
+                                            from utils.email import EmailManager
+                                            
+                                            # 通过映射表从转换后的数据中获取申请人账号
+                                            owner_account = get_applicant_from_transformed_data(
+                                                transformed_data, license_type, user_type
+                                            )
+                                            
+                                            if not owner_account:
+                                                logger.warning("未获取到申请人账号，使用默认值")
+                                                owner_account = config.MAIL_RECIPIENT
+                                            
+                                            # 发送即将过期提醒邮件
+                                            email_manager = EmailManager()
+                                            email_manager.license_expired_send_email(owner_account, application, end_time)
+                                            logger.info(f"已发送 License 即将过期提醒邮件给: {owner_account}")
+                                        except Exception as email_err:
+                                            logger.error(f"发送过期提醒邮件失败: {str(email_err)}")
+                                
+                                # 如果是 FlexNet 类型，立即生成 license 文件
+                                if license_type == 'flexnet':
+                                    try:
+                                        # 获取对应的预制作模板文件路径
+                                        template_file = flexnet_template_files.get(product)
+                                        
+                                        if template_file:
+                                            # 将相对路径转换为绝对路径
+                                            abs_template_file = os.path.join(MEDIA_ROOT, template_file)
+                                            gen_result = self._generate_flexnet_license(
+                                                instance=application,
+                                                json_data=json_data,
+                                                template_file_path=abs_template_file
+                                            )
+                                            if gen_result.get('success'):
+                                                logger.info(f"产品 {product} License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                            else:
+                                                logger.error(f"产品 {product} License 文件生成失败: {gen_result.get('error')}")
+                                        else:
+                                            logger.warning(f"未找到产品 {product} 的预制作模板文件，跳过 License 生成")
+                                    except Exception as e:
+                                        logger.error(f"生成产品 {product} License 文件异常: {str(e)}", exc_info=True)
+                                
+                                # 如果是 Bitanswer 类型，直接调用 API 生成 license 文件
+                                elif license_type == 'bitanswer':
+                                    try:
+                                        gen_result = self._generate_bitanswer_license(
+                                            instance=application,
+                                            json_data=json_data
+                                        )
+                                        if gen_result.get('success'):
+                                            logger.info(f"产品 {product} Bitanswer License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                        else:
+                                            logger.error(f"产品 {product} Bitanswer License 文件生成失败: {gen_result.get('error')}")
+                                    except Exception as e:
+                                        logger.error(f"生成产品 {product} Bitanswer License 文件异常: {str(e)}", exc_info=True)
                     
                     if created_applications:
                         logger.info(f"共创建 {len(created_applications)} 条申请记录，IDs: {created_applications}")
@@ -1068,16 +1487,20 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             # 检查是否超过最大重试次数
             if instance.retry_count >= instance.max_retry_count:
                 return ErrorResponse(msg=f'已达到最大重试次数({instance.max_retry_count})，无法继续重试')
-            
-            # 从固定目录读取JSON文件
+            # 从固定目录读取JSON文件，如果不存在则使用数据库中的json_data
             json_file_path = os.path.join(BASE_DIR, 'license_data', f'{instance.id}.json')
             
-            if not os.path.exists(json_file_path):
-                return ErrorResponse(msg=f'JSON文件不存在: {json_file_path}')
-            
-            # 解析JSON数据
-            with open(json_file_path, 'r', encoding='utf-8') as f:
-                json_data = json.load(f)
+            if os.path.exists(json_file_path):
+                # 从文件读取JSON数据
+                with open(json_file_path, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                logger.info(f"从文件读取JSON数据: {json_file_path}")
+            elif instance.json_data:
+                # 文件不存在，使用数据库中的json_data
+                json_data = instance.json_data
+                logger.info(f"JSON文件不存在，使用数据库中的json_data: 申请记录ID {instance.id}")
+            else:
+                return ErrorResponse(msg=f'JSON文件不存在且数据库中也没有json_data: {json_file_path}')
             
             # 从JSON中提取元数据作为转换条件
             license_type_from_json = json_data.get('LicenseType', '').lower()
@@ -1143,7 +1566,81 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             
             # 根据application_type调用不同的生成逻辑
             if instance.application_type == 'flexnet':
-                result = self._generate_flexnet_license(instance, json_data)
+                # 重试时，需要重新生成预制作模板文件
+                try:
+                    from apps.lylicense.views import _generate_flexnet_template_file
+                    
+                    # 从 transformed_data 中提取必要信息
+                    serial_number = transformed_data.get('SerialNumber', instance.serial_number)
+                    mac_address = transformed_data.get('MacAddress', instance.mac_address)
+                    hostname = transformed_data.get('Hostname', instance.hostname)
+                    product_name = transformed_data.get('Product', instance.product)
+                    
+                    # 清理 MAC 地址
+                    mac_clean = mac_address.replace(':', '').replace('-', '').upper() if mac_address else 'UNKNOWN'
+                    
+                    # 构建 product_features 和 user_info_list
+                    product_features = {}
+                    user_info_list = []
+                    
+                    # 从 feature 和 quantity 中重建数据
+                    if instance.feature and isinstance(instance.feature, list):
+                        product_features[product_name] = {}
+                        for feat in instance.feature:
+                            # 从 quantity 中获取数量
+                            if isinstance(instance.quantity, dict):
+                                product_features[product_name][feat] = instance.quantity.get(feat, 1)
+                            else:
+                                product_features[product_name][feat] = 1
+                    
+                    # 构建 user_info_list
+                    if instance.start_time and instance.end_time:
+                        from datetime import datetime
+                        start_timestamp = int(instance.start_time.strftime('%s')) * 1000 if hasattr(instance.start_time, 'strftime') else int(instance.start_time.timestamp()) * 1000
+                        end_timestamp = int(instance.end_time.strftime('%s')) * 1000 if hasattr(instance.end_time, 'strftime') else int(instance.end_time.timestamp()) * 1000
+                        
+                        user_info_list.append({
+                            'Product': product_name,
+                            'Startdate': start_timestamp,
+                            'Expirydate': end_timestamp,
+                            'Keyword': instance.keyword
+                        })
+                    
+                    # 生成预制作模板文件
+                    file_hash = instance.file_hash or 'retry'
+                    template_file_path = _generate_flexnet_template_file(
+                        serial_number=serial_number or 'UNKNOWN',
+                        mac_address=mac_address or 'UNKNOWN',
+                        hostname=hostname or 'UNKNOWN',
+                        product_name=product_name or 'UNKNOWN',
+                        product_features=product_features,
+                        user_info_list=user_info_list,
+                        file_hash=file_hash,
+                        keyword=instance.keyword
+                    )
+                    
+                    if template_file_path:
+                        # 将相对路径转换为绝对路径
+                        abs_template_file = os.path.join(MEDIA_ROOT, template_file_path)
+                        logger.info(f"重试时重新生成预制作模板文件: {abs_template_file}")
+                        
+                        result = self._generate_flexnet_license(
+                            instance=instance,
+                            json_data=transformed_data,
+                            template_file_path=abs_template_file
+                        )
+                    else:
+                        logger.error("重新生成预制作模板文件失败")
+                        result = {
+                            'success': False,
+                            'error': '重新生成预制作模板文件失败'
+                        }
+                except Exception as e:
+                    logger.error(f"重试时生成预制作模板文件异常: {str(e)}", exc_info=True)
+                    result = {
+                        'success': False,
+                        'error': f'重试时生成预制作模板文件异常: {str(e)}'
+                    }
             elif instance.application_type == 'bitanswer':
                 result = self._generate_bitanswer_license(instance, json_data)
             else:
@@ -1155,23 +1652,87 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                 instance.save()
                 
                 # 创建License记录
-                license_record = LicenseRecord.objects.create(
-                    application=instance,
-                    license_id=result.get('license_id', f'LIC-{instance.id}'),
-                    license_type=instance.application_type,
-                    file_name=result.get('file_name', ''),
-                    file_relative_path=result.get('file_relative_path', ''),
-                    directory=result.get('directory', ''),
-                    full_path=result.get('full_path', ''),
-                    feature=json_data.get('feature', instance.feature),
-                    vendor=result.get('vendor', ''),
-                    version=result.get('version', ''),
-                    host_id=json_data.get('mac_address', instance.mac_address),
-                    start_time=json_data.get('start_time') or instance.start_time,
-                    end_time=json_data.get('end_time') or instance.end_time,
-                    quantity=json_data.get('quantity', instance.quantity),
-                    extra_info=result.get('extra_info', {})
-                )
+                license_id = result.get('license_id', f'LIC-{instance.id}')
+                
+                # 从 json_data 中获取时间信息，并转换为 date 类型
+                from datetime import datetime as dt
+                start_time = json_data.get('start_time') or instance.start_time
+                end_time = json_data.get('end_time') or instance.end_time
+                
+                # 如果是 datetime 类型，转换为 date 类型
+                if isinstance(start_time, dt):
+                    start_time = start_time.date()
+                if isinstance(end_time, dt):
+                    end_time = end_time.date()
+                
+                # 检查是否已存在
+                if LicenseRecord.objects.filter(license_id=license_id).exists():
+                    logger.info(f"LicenseRecord 已存在: {license_id}，跳过创建")
+                else:
+                    license_record = LicenseRecord.objects.create(
+                        application=instance,
+                        license_id=license_id,
+                        license_type=instance.application_type,
+                        file_name=result.get('file_name', ''),
+                        file_relative_path=result.get('file_relative_path', ''),
+                        directory=result.get('directory', ''),
+                        full_path=result.get('full_path', ''),
+                        feature=json_data.get('feature', instance.feature),
+                        vendor=result.get('vendor', ''),
+                        version=result.get('version', ''),
+                        host_id=json_data.get('mac_address', instance.mac_address),
+                        start_time=start_time,
+                        end_time=end_time,
+                        quantity=json_data.get('quantity', instance.quantity),
+                        status=1,  # 有效
+                        extra_info=result.get('extra_info', {})
+                    )
+                    logger.info(f"License 记录已创建: {license_record.license_id}, quantity: {json.dumps(license_record.quantity, ensure_ascii=False)}")
+                
+                # 发送邮件通知申请人（制作成功）
+                try:
+                    from utils.email import EmailManager
+                    from django.conf import settings
+                    
+                    # 优先使用数据库中保存的 applicant_id（真实账号）
+                    email_applicant = instance.applicant_id
+                    
+                    # 如果数据库中没有，尝试从 json_data 中提取
+                    if not email_applicant:
+                        # 从 instance.json_data 中提取 user_type
+                        usage_from_json = instance.json_data.get('Usage', '') if instance.json_data else ''
+                        email_user_type = 'external'  # 默认值
+                        if usage_from_json == '内部':
+                            email_user_type = 'internal'
+                        elif usage_from_json == '外部':
+                            email_user_type = 'external'
+                        
+                        email_applicant = get_applicant_from_transformed_data(
+                            transformed_data=json_data,
+                            license_type=instance.application_type,
+                            user_type=email_user_type,  # 使用从JSON解析的user_type
+                            field_name='ApplicantID'
+                        )
+                    
+                    # 如果还是没有，使用配置文件中的默认接收人（不能使用中文名称）
+                    if not email_applicant:
+                        from config import MAIL_RECIPIENT
+                        email_applicant = MAIL_RECIPIENT
+                        logger.warning(f"未找到申请人账号，使用默认接收人: {email_applicant}")
+                    
+                    if email_applicant and email_applicant != '未知申请人':
+                        email_manager = EmailManager()
+                        email_manager.license_generated_send_email(
+                            owner=email_applicant,
+                            application=instance,
+                            license_file_name=result.get('file_name'),
+                            remote_dir='/TestHub/sqa/Platform/license'
+                        )
+                        logger.info(f"已发送 License 生成成功邮件给申请人: {email_applicant}")
+                    else:
+                        logger.warning(f"申请人信息为空，跳过邮件发送")
+                except Exception as email_error:
+                    logger.error(f"发送邮件失败: {str(email_error)}", exc_info=True)
                 
                 return SuccessResponse(data={
                     'application_id': instance.id,
@@ -1181,7 +1742,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             else:
                 instance.status = 0  # 制作失败
                 instance.fail_reason = result.get('error', '未知错误')
-                instance.retry_count += 1  # 增加重试次数
+                # 注意：retry_count 已在 retry 方法中增加，这里不再重复增加
                 instance.save()
                 
                 # 判断是否可以自动重试
@@ -1202,7 +1763,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             if instance:
                 instance.status = 0
                 instance.fail_reason = str(e)
-                instance.retry_count += 1
+                # 注意：retry_count 已在 retry 方法中增加，这里不再重复增加
                 instance.save()
             return ErrorResponse(msg=f"操作失败: {str(e)}")
     
@@ -1222,6 +1783,11 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             if instance.retry_count >= instance.max_retry_count:
                 return ErrorResponse(msg=f'已达到最大重试次数({instance.max_retry_count})，无法继续重试')
             
+            # 在重试开始前，先增加重试次数
+            instance.retry_count += 1
+            instance.save()
+            logger.info(f"开始重试 License 制作，申请记录ID: {instance.id}，当前重试次数: {instance.retry_count}/{instance.max_retry_count}")
+            
             # 直接调用parse_and_generate逻辑
             return self.parse_and_generate(request, pk)
             
@@ -1232,10 +1798,15 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                 instance.save()
             return ErrorResponse(msg=f"重试失败: {str(e)}")
     
-    def _generate_flexnet_license(self, instance, json_data):
+    def _generate_flexnet_license(self, instance, json_data, template_file_path=None):
         """
         生成FlexNet类型的License
-        执行flexnet命令生成license文件
+        执行远程 lmcrypt_new 脚本生成正式 license 文件
+        
+        Args:
+            instance: LicenseApplication 实例
+            json_data: JSON 数据
+            template_file_path: 预制作 license 模板文件路径（可选），如果提供则使用远程执行
         """
         try:
             # 构建license文件路径
@@ -1243,36 +1814,54 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             if not os.path.exists(license_dir):
                 os.makedirs(license_dir)
             
-            file_name = f'{instance.id}_flex.lic'
+            file_name = f'{instance.id}_{instance.product}_flex.lic'
             license_file = os.path.join(license_dir, file_name)
             relative_path = os.path.join('license', 'flexnet', file_name)
             
-            # 执行flexnet命令
-            cmd = f'flexnet {license_file}'
-            logger.info(f"执行FlexNet命令: {cmd}")
-            
-            # 执行命令，无返回表示成功
-            exit_code = os.system(cmd)
-            
-            if exit_code == 0:
-                # 命令执行成功
-                result = {
-                    'success': True,
-                    'file_name': file_name,
-                    'file_relative_path': relative_path,
-                    'directory': os.path.join(MEDIA_ROOT, 'license', 'flexnet'),
-                    'full_path': license_file,
-                    'vendor': 'FlexNet',
-                    'version': json_data.get('version', '1.0'),
-                    'license_id': f'FN-{instance.id}',
-                    'message': 'FlexNet License制作成功',
-                    'exit_code': exit_code
-                }
+            # 如果有预制作模板文件，使用远程执行 lmcrypt_new 脚本
+            if template_file_path and os.path.exists(template_file_path):
+                logger.info(f"使用远程 lmcrypt_new 脚本生成 FlexNet License，模板文件: {template_file_path}")
+                
+                # 远程执行 lmcrypt_new 脚本
+                remote_result = _execute_remote_lmcrypt(template_file_path, instance.product)
+                
+                if remote_result['success']:
+                    # 远程执行成功，记录信息
+                    logger.info(f"远程生成 License 成功: {remote_result['remote_license_path']}")
+                    
+                    # 使用远程执行返回的实际文件名，而不是预定义的文件名
+                    actual_file_name = os.path.basename(remote_result['local_license_path'])
+                    actual_relative_path = os.path.join('license', 'flexnet', actual_file_name)
+                    actual_full_path = remote_result['local_license_path']
+                    
+                    result = {
+                        'success': True,
+                        'file_name': actual_file_name,
+                        'file_relative_path': actual_relative_path,
+                        'directory': os.path.dirname(actual_full_path),
+                        'full_path': actual_full_path,
+                        'vendor': 'FlexNet',
+                        'version': json_data.get('version', '1.0'),
+                        'license_id': f'FN-{instance.id}',
+                        'message': 'FlexNet License制作成功（远程执行）',
+                        'template_used': template_file_path,
+                        'remote_license_path': remote_result['remote_license_path'],
+                        'remote_output': remote_result.get('output', '')
+                    }
+                else:
+                    # 远程执行失败
+                    logger.error(f"远程 lmcrypt_new 执行失败: {remote_result['error']}")
+                    result = {
+                        'success': False,
+                        'error': f'远程 lmcrypt_new 执行失败: {remote_result["error"]}',
+                        'template_used': template_file_path
+                    }
             else:
+                # 没有模板文件，返回错误
+                logger.error("未提供预制作模板文件，无法生成 FlexNet License")
                 result = {
                     'success': False,
-                    'error': f'FlexNet命令执行失败，退出码: {exit_code}',
-                    'exit_code': exit_code
+                    'error': '未提供预制作模板文件'
                 }
             
             return result
@@ -1378,12 +1967,103 @@ class LicenseRecordViewSet(CustomModelViewSet):
     """
     queryset = LicenseRecord.objects.all()
     serializer_class = LicenseRecordSerializer
-    filterset_fields = ['license_type', 'status', 'host_id', 'vendor']
+    filterset_fields = ['license_type', 'status', 'host_id', 'vendor', 'license_id']
     search_fields = ['license_id', 'feature', 'vendor', 'host_id', 'file_name']
     ordering_fields = ['create_datetime', 'end_time', 'remaining_days']
     ordering = '-create_datetime'
     # License模块不需要数据权限过滤
     extra_filter_backends = []
+    
+    def list(self, request, *args, **kwargs):
+        """列表查询时自动更新已过期的License状态，并发送邮件提醒"""
+        from datetime import datetime, timedelta, date
+        from utils.email import EmailManager
+        
+        now = date.today()  # 使用 date 而不是 datetime，因为 end_time 是 DateField
+        expiring_threshold = now + timedelta(days=30)
+        
+        # 1. 自动更新已过期的License状态
+        expired_records = LicenseRecord.objects.filter(
+            end_time__lt=now,
+            status=1  # 只更新当前状态为有效的
+        )
+        
+        expired_count = expired_records.count()
+        if expired_count > 0:
+            # 更新状态为已过期
+            expired_records.update(status=2)
+            logger.info(f"列表查询时自动更新了 {expired_count} 条已过期的 License 记录状态")
+            
+            # 发送过期提醒邮件（只发送一次）
+            email_manager = EmailManager()
+            for record in expired_records:
+                # 检查是否已发送过期提醒邮件
+                extra_info = record.extra_info or {}
+                if extra_info.get('expired_email_sent', False):
+                    logger.info(f"跳过已发送过期提醒邮件的记录: {record.application.serial_number}")
+                    continue
+                
+                # 获取关联的申请记录
+                try:
+                    application = LicenseApplication.objects.get(id=record.application.id)
+                    # 检查申请人ID是否存在
+                    if not application.applicant_id:
+                        logger.warning(f"跳过发送邮件，申请人ID为空: {record.application.serial_number}")
+                        continue
+                    email_manager.license_expired_send_email(
+                        owner=application.applicant_id,  # 使用申请人ID而不是姓名
+                        application=application,
+                        end_time=record.end_time
+                    )
+                    # 标记已发送
+                    extra_info['expired_email_sent'] = True
+                    record.extra_info = extra_info
+                    record.save(update_fields=['extra_info'])
+                    logger.info(f"已发送过期提醒邮件: {record.application.serial_number}")
+                except Exception as e:
+                    logger.error(f"发送过期提醒邮件失败 {record.application.serial_number}: {str(e)}")
+        
+        # 2. 检查即将过期的License（≤30天），发送提醒邮件
+        expiring_soon_records = LicenseRecord.objects.filter(
+            end_time__lte=expiring_threshold,
+            end_time__gt=now,
+            status=1,  # 有效状态
+            remaining_days__lte=30  # 剩余天数≤30
+        )
+        
+        if expiring_soon_records.exists():
+            email_manager = EmailManager()
+            for record in expiring_soon_records:
+                # 检查是否已发送即将过期提醒邮件
+                extra_info = record.extra_info or {}
+                if extra_info.get('expiring_soon_email_sent', False):
+                    logger.info(f"跳过已发送即将过期提醒邮件的记录: {record.application.serial_number}")
+                    continue
+                
+                # 获取关联的申请记录
+                try:
+                    application = LicenseApplication.objects.get(id=record.application.id)
+                    # 检查申请人ID是否存在
+                    if not application.applicant_id:
+                        logger.warning(f"跳过发送邮件，申请人ID为空: {record.application.serial_number}")
+                        continue
+                    # 发送即将过期提醒邮件
+                    email_manager.license_expiring_soon_send_email(
+                        owner=application.applicant_id,  # 使用申请人ID而不是姓名
+                        application=application,
+                        end_time=record.end_time,
+                        remaining_days=record.remaining_days
+                    )
+                    # 标记已发送
+                    extra_info['expiring_soon_email_sent'] = True
+                    record.extra_info = extra_info
+                    record.save(update_fields=['extra_info'])
+                    logger.info(f"已发送即将过期提醒邮件: {record.application.serial_number}, 剩余{record.remaining_days}天")
+                except Exception as e:
+                    logger.error(f"发送即将过期提醒邮件失败 {record.application.serial_number}: {str(e)}")
+        
+        # 调用父类的 list 方法
+        return super().list(request, *args, **kwargs)
     
     @action(methods=['get'], detail=False)
     def statistics(self, request):
@@ -1391,10 +2071,19 @@ class LicenseRecordViewSet(CustomModelViewSet):
         获取License统计信息
         """
         from django.db.models import Count
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, date
         
         # 使用本地时间
-        now = datetime.now()
+        now = date.today()  # 使用 date 而不是 datetime，因为 end_time 是 DateField
+        
+        # 自动更新已过期的License状态
+        expired_count = LicenseRecord.objects.filter(
+            end_time__lt=now,
+            status=1  # 只更新当前状态为有效的
+        ).update(status=2)  # 更新为已过期
+        
+        if expired_count > 0:
+            logger.info(f"自动更新了 {expired_count} 条已过期的 License 记录状态")
         
         # 按类型统计
         type_stats = LicenseRecord.objects.values('license_type').annotate(
@@ -1409,21 +2098,21 @@ class LicenseRecordViewSet(CustomModelViewSet):
         # 计算动态时间阈值
         expiring_threshold = now + timedelta(days=30)
         
-        # 即将过期的License（end_time距离现在<=30天且>0天）
+        # 即将过期的License（status=1 有效状态，且 end_time 距离现在<=30天且>0天）
         expiring_soon = LicenseRecord.objects.filter(
             end_time__lte=expiring_threshold,
             end_time__gt=now,
             status=1  # 有效状态
         ).count()
         
-        # 已过期的License（end_time < 现在）
+        # 已过期的License（status=2 已过期状态）
         expired = LicenseRecord.objects.filter(
-            end_time__lt=now
+            status=2  # 已过期状态
         ).count()
 
-        # 有效的（end_time > 现在）
+        # 有效的（status=1 有效状态）
         efficient = LicenseRecord.objects.filter(
-            end_time__gt=now
+            status=1  # 有效状态
         ).count()
         
         return SuccessResponse(data={
@@ -1433,6 +2122,70 @@ class LicenseRecordViewSet(CustomModelViewSet):
             'expired': expired,
             'efficient': efficient,
             'total': LicenseRecord.objects.count()
+        })
+    
+    @action(methods=['get'], detail=False)
+    def dashboard_statistics(self, request):
+        """
+        Dashboard 统计分析接口
+        返回：产品申请分布、Feature申请分布、客户申请分布
+        """
+        from django.db.models import Count, Q
+        from collections import defaultdict
+        
+        # 1. 产品申请分布统计（按产品分组统计申请数量）
+        product_stats = LicenseApplication.objects.values('product').annotate(
+            count=Count('id')
+        ).order_by('-count')
+        
+        # 2. Feature 申请分布统计（解析 feature JSON 字段）
+        feature_stats_dict = defaultdict(int)
+        applications = LicenseApplication.objects.filter(
+            feature__isnull=False
+        ).exclude(feature=[])
+        
+        for app in applications:
+            if app.feature:
+                # feature 是 JSON 数组，如 ["Feature1", "Feature2"]
+                if isinstance(app.feature, list):
+                    for feat in app.feature:
+                        if feat:
+                            feature_stats_dict[feat] += 1
+                elif isinstance(app.feature, str):
+                    # 如果是字符串，直接计数
+                    feature_stats_dict[app.feature] += 1
+        
+        # 转换为列表并按数量排序
+        feature_stats = [
+            {'feature': feat, 'count': count}
+            for feat, count in sorted(feature_stats_dict.items(), key=lambda x: x[1], reverse=True)
+        ]
+        
+        # 3. 客户申请分布统计（按客户名称分组）
+        customer_stats = LicenseApplication.objects.values('customer_name').annotate(
+            count=Count('id')
+        ).order_by('-count')
+        
+        # 4. 按 License 类型统计
+        license_type_stats = LicenseApplication.objects.values('application_type').annotate(
+            count=Count('id')
+        )
+        
+        # 5. 按状态统计
+        status_stats = LicenseApplication.objects.values('status').annotate(
+            count=Count('id')
+        )
+        
+        # 6. 总体统计
+        total_applications = LicenseApplication.objects.count()
+        
+        return SuccessResponse(data={
+            'product_stats': list(product_stats),
+            'feature_stats': feature_stats[:20],  # 只返回前20个热门Feature
+            'customer_stats': list(customer_stats)[:15],  # 只返回前15个客户
+            'license_type_stats': list(license_type_stats),
+            'status_stats': list(status_stats),
+            'total_applications': total_applications
         })
 
 
@@ -1478,3 +2231,129 @@ class LicenseFieldMappingViewSet(CustomModelViewSet):
             traceback.print_exc()
             print(f"{'='*60}\n")
             raise
+
+
+def _generate_flexnet_template_file(serial_number, mac_address, hostname, product_name, product_features, user_info_list, file_hash, keyword=None):
+    """
+    为单个产品生成 FlexNet 预制作 license 模板文件
+    
+    文件格式示例：
+    SERVER ahpc0320 C81FBCEB0AE 55555
+    VENDOR PHLEXING ../PHLEXING
+    USE_SERVER
+    INCREMENT GloryEX PHLEXING 2.0 28-feb-2025 4600 HOSTID=ANY \
+      START=24-jan-2025 SIGN="01C8 B069 20FB 044D 0260 188E ECCB \
+      5263 48AB 4A6D 3F4E 9B7D E6A7 3965 9E37 08E1 1044 D208 6E1D \
+      60F4 07AA 03E4 A3D4 BC29 5411 EEBA B6F4 4972 506B 5A38"
+    
+    Args:
+        serial_number: 序列号（用作文件名）
+        mac_address: MAC地址
+        hostname: 主机名
+        product_name: 产品名称
+        product_features: 产品feature字典 {product: {feature: quantity}} (仅包含一个产品)
+        user_info_list: UserInfo列表
+        file_hash: 文件哈希值
+        keyword: 关键字，如果为空使用 INCREMENT，不为空使用 FEATURE
+    
+    Returns:
+        str: 生成的模板文件路径，如果失败返回 None
+    """
+    try:
+        from django.conf import settings
+        from datetime import datetime
+        
+        # 构建模板文件存储路径
+        template_dir = os.path.join(MEDIA_ROOT, 'license', 'templates', 'flexnet')
+        if not os.path.exists(template_dir):
+            os.makedirs(template_dir)
+        
+        # 使用序列号+产品名称作为文件名（去除特殊字符）
+        safe_serial = serial_number.replace('/', '_').replace('\\', '_').replace(':', '_')
+        safe_product = product_name.replace('/', '_').replace('\\', '_').replace(' ', '_')
+        file_name = f"{safe_serial}_{safe_product}_{file_hash[:8]}.lic"
+        template_file = os.path.join(template_dir, file_name)
+        relative_path = os.path.join('license', 'templates', 'flexnet', file_name)
+        
+        # 构建模板文件内容
+        lines = []
+        
+        # 第1行：SERVER <hostname> <mac_address_without_colons> 55555
+        # mac_address 需要去除冒号
+        mac_clean = mac_address.replace(':', '').replace('-', '').upper() if mac_address else 'UNKNOWN'
+        server_line = f"SERVER {hostname or 'UNKNOWN'} {mac_clean} 55555"
+        lines.append(server_line)
+        
+        # 第2行：VENDOR PHLEXING ../PHLEXING
+        lines.append("VENDOR PHLEXING ../PHLEXING")
+        
+        # 第3行：USE_SERVER
+        lines.append("USE_SERVER")
+        
+        # 从第4行开始：INCREMENT 行
+        # 获取当前产品的 features
+        features = product_features.get(product_name, {})
+        if not features:
+            logger.warning(f"产品 {product_name} 没有 features，跳过生成")
+            return None
+        
+        # 获取该产品的开始和结束时间
+        start_date_str = None
+        end_date_str = None
+        
+        for ui in user_info_list:
+            if ui.get('Product') == product_name:
+                start_timestamp = ui.get('Startdate')
+                end_timestamp = ui.get('Expirydate')
+                
+                if start_timestamp and isinstance(start_timestamp, (int, float)):
+                    start_dt = datetime.fromtimestamp(start_timestamp / 1000)
+                    # 使用 %b 获取月份英文缩写（Jan, Feb等），然后转为小写
+                    start_date_str = start_dt.strftime("%d-%b-%Y").lower()
+                
+                if end_timestamp and isinstance(end_timestamp, (int, float)):
+                    end_dt = datetime.fromtimestamp(end_timestamp / 1000)
+                    # 使用 %b 获取月份英文缩写（Jan, Feb等），然后转为小写
+                    end_date_str = end_dt.strftime("%d-%b-%Y").lower()
+                
+                break
+        
+        # 验证时间字段是否获取成功
+        if not start_date_str or not end_date_str:
+            logger.error(f"产品 {product_name} 缺少开始时间或结束时间，无法生成模板文件")
+            return None
+        
+        # 为该产品的每个 feature 生成一个 INCREMENT/FEATURE 行
+        for feature_name, quantity in features.items():
+            # 根据 keyword 是否为空决定使用 INCREMENT 还是 FEATURE
+            if keyword:
+                # keyword 不为空，使用 FEATURE
+                feature_line = f"FEATURE {feature_name} PHLEXING 2.0 {end_date_str} {quantity} HOSTID=ANY {keyword} \\"
+            else:
+                # keyword 为空，使用 INCREMENT
+                feature_line = f"INCREMENT {feature_name} PHLEXING 2.0 {end_date_str} {quantity} HOSTID=ANY \\"
+            
+            lines.append(feature_line)
+            
+            # START=<start_date> SIGN="<16进制签名占位符> \
+            sign_placeholder = "01C8 B069 20FB 044D 0260 188E ECCB \\\n  5263 48AB 4A6D 3F4E 9B7D E6A7 3965 9E37 08E1 1044 D208 6E1D \\\n  60F4 07AA 03E4 A3D4 BC29 5411 EE8A B6F4 4972 505B 5A38"
+            start_line = f'  START={start_date_str} SIGN="{sign_placeholder}"'
+            lines.append(start_line)
+            
+            # 添加反斜杠结束
+            # lines.append("  \\")
+        
+        # 写入文件
+        with open(template_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        
+        logger.info(f"FlexNet 模板文件已保存: {template_file}")
+        logger.info(f"模板文件内容预览 (产品: {product_name}):")
+        for i, line in enumerate(lines[:10], 1):
+            logger.info(f"  {i}: {line}")
+        
+        return relative_path
+        
+    except Exception as e:
+        logger.error(f"生成 FlexNet 模板文件失败 (产品: {product_name}): {str(e)}", exc_info=True)
+        return None

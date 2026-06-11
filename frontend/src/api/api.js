@@ -173,6 +173,16 @@ export const messagesMessagenoticeEdit = params => ajaxPut({url: `messages/messa
 //消息公告-删除
 export const messagesMessagenoticeDelete = params => ajaxDelete({url: `messages/messagenotice/`,params})
 
+// 用户消息相关API（前端使用）
+// 获取未读消息数量
+export const getUnreadMessageNum = params => ajaxGet({url: `messages/unread-num/`,params})
+// 获取平台公告列表
+export const getUserNotices = params => ajaxGet({url: `messages/notices/`,params})
+// 获取用户消息列表（系统消息+平台公告）
+export const getUserMessages = params => ajaxGet({url: `messages/user-messages/`,params})
+// 标记消息为已读或删除
+export const updateUserMessageStatus = params => ajaxPost({url: `messages/user-messages/`,params})
+
 
 
 /**
@@ -370,6 +380,9 @@ export const licenseRecordDelete= params => ajaxDelete({url: `license/record/`,p
 // License记录 统计信息
 export const licenseRecordStatistics= params => ajaxGet({url: `license/record/statistics/`,params})
 
+// License Dashboard 统计分析
+export const licenseDashboardStatistics= params => ajaxGet({url: `license/application/dashboard_statistics/`,params})
+
 // License字段映射列表
 export const licenseFieldMapping= params => ajaxGet({url: `license/field-mapping/`,params})
 // License字段映射 新增
@@ -420,14 +433,14 @@ export const workflowInstanceCreate= params => ajaxPost({url: `workflow/workflow
 export const workflowInstanceSubmit= (id) => ajaxPost({url: `workflow/workflow-instance/${id}/submit/`,params: {}})
 // 流程实例 撤回
 export const workflowInstanceWithdraw= (id) => ajaxPost({url: `workflow/workflow-instance/${id}/withdraw/`,params: {}})
+// 流程实例 重新发起（已撤回的流程）
+export const workflowInstanceReinitiate= (id, params) => ajaxPut({url: `workflow/workflow-instance/${id}/reinitiate/`,params})
 // 流程实例 取消
 export const workflowInstanceCancel= (id) => ajaxPost({url: `workflow/workflow-instance/${id}/cancel/`,params: {}})
-// 我发起的流程
-export const workflowMyApply= params => ajaxGet({url: `workflow/workflow-instance/my_apply/`,params})
-// 待我审批的流程
-export const workflowMyApprove= params => ajaxGet({url: `workflow/workflow-instance/my_approve/`,params})
-// 抄送给我的流程
-export const workflowMyCC= params => ajaxGet({url: `workflow/workflow-instance/my_cc/`,params})
+// 流程实例 删除
+export const workflowInstanceDelete= (id) => ajaxDelete({url: `workflow/workflow-instance/${id}/delete_instance/`,params: {}})
+// 流程监控统计
+export const workflowDashboardStatistics= () => ajaxGet({url: `workflow/workflow-dashboard/statistics/`,params: {}})
 
 // 审批任务 通过
 export const workflowTaskApprove= (id, data) => ajaxPost({url: `workflow/workflow-task/${id}/approve/`,params: data})

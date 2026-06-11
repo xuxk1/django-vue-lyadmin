@@ -82,7 +82,7 @@ def to_size(size):
 
 def is_64bitos():
     """
-    判断是否x64系统(windows\linux都适用)
+    判断是否x64系统(windows/linux都适用)
     利用platform.uname()
     windows:uname_result(system='Windows', node='xxxxx', release='10', version='10.0.19042', machine='AMD64')
     linux:uname_result(system='Linux', node='xxxx', release='5.10.134-12.2.al8.x86_64', version='#1 SMP Thu Oct 27 10:07:15 CST 2022', machine='x86_64', processor='x86_64')

@@ -193,6 +193,15 @@ const routes = [
         }
       },
       {
+        path: '/myMessages',
+        name: 'myMessages',
+        component: () => import('../views/messageCenter/myMessages.vue'),
+        meta: {
+          requireAuth: true,
+          index: '/myMessages',
+        }
+      },
+      {
         path: '/personalCenter',
         name: 'personalCenter',
         component: () => import('../views/personalCenter/personalCenter.vue'),

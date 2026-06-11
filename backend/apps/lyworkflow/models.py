@@ -13,6 +13,9 @@ class WorkflowType(CoreModel):
     icon = models.CharField(max_length=100, null=True, blank=True, verbose_name="图标")
     status = models.SmallIntegerField(default=1, verbose_name="状态（0禁用/1启用）")
     sort = models.IntegerField(default=1, verbose_name="排序")
+    
+    # 动态表单配置（JSON格式存储表单字段定义）
+    form_schema = models.JSONField(null=True, blank=True, verbose_name="表单配置")
 
     class Meta:
         db_table = 'lyworkflow_type'
@@ -25,17 +28,50 @@ class WorkflowType(CoreModel):
 
 
 class WorkflowStep(CoreModel):
-    """流程步骤配置"""
+    """流程步骤配置（节点配置）"""
     APPROVER_TYPE_CHOICES = (
         (1, '指定角色'),
         (2, '指定部门'),
         (3, '部门负责人'),
         (4, '指定人员'),
+        (5, '申请人自选'),
+        (6, '多级审批（组合）'),
+    )
+
+    SIGN_MODE_CHOICES = (
+        (1, '或签（一人审批即可）'),
+        (2, '会签（所有人都需审批）'),
+        (3, '顺序审批（按顺序依次审批）'),
+    )
+
+    APPROVAL_MODE_CHOICES = (
+        (1, '自动流转'),
+        (2, '手动配置'),
+    )
+
+    NODE_TYPE_CHOICES = (
+        (1, '普通审批节点'),
+        (2, '抄送节点'),
+        (3, '条件分支节点'),
+        (4, '并行网关节点'),
+        (5, '结束节点'),
+    )
+
+    AUTO_ACTION_CHOICES = (
+        (0, '不自动处理'),
+        (1, '自动通过'),
+        (2, '自动退回'),
     )
 
     workflow_type = models.ForeignKey(WorkflowType, on_delete=models.CASCADE, verbose_name="流程类型", related_name='steps')
     step_name = models.CharField(max_length=100, verbose_name="步骤名称")
     step_order = models.IntegerField(verbose_name="步骤顺序")
+
+    # 节点类型
+    node_type = models.SmallIntegerField(default=1, choices=NODE_TYPE_CHOICES, verbose_name="节点类型")
+    
+    # 审批模式（自动流转/手动配置）
+    approval_mode = models.SmallIntegerField(default=1, choices=APPROVAL_MODE_CHOICES, verbose_name="审批模式", help_text="1=自动流转，2=手动配置")
 
     # 审批人配置方式
     approver_type = models.SmallIntegerField(choices=APPROVER_TYPE_CHOICES, verbose_name="审批人类型")
@@ -45,13 +81,40 @@ class WorkflowStep(CoreModel):
     approver_dept = models.ForeignKey('mysystem.Dept', null=True, blank=True, on_delete=models.SET_NULL, verbose_name="审批部门")
     approver_users = models.ManyToManyField('mysystem.Users', blank=True, related_name='approved_workflow_steps', verbose_name="审批人员")
 
+    # 多人审批模式
+    sign_mode = models.SmallIntegerField(default=1, choices=SIGN_MODE_CHOICES, verbose_name="审批模式")
+
     # 退回设置
     allow_return = models.BooleanField(default=True, verbose_name="是否允许退回")
     allow_reject = models.BooleanField(default=False, verbose_name="是否允许驳回（直接结束）")
 
+    # 超时设置
+    timeout_hours = models.IntegerField(null=True, blank=True, verbose_name="超时时间（小时）")
+    auto_action = models.SmallIntegerField(default=0, choices=AUTO_ACTION_CHOICES, verbose_name="超时自动处理")
+
+    # 通知设置
+    notify_email = models.BooleanField(default=True, verbose_name="邮件通知")
+    notify_message = models.BooleanField(default=True, verbose_name="站内信通知")
+    notify_sms = models.BooleanField(default=False, verbose_name="短信通知")
+
+    # 条件分支（JSON格式存储条件规则）
+    condition_rules = models.JSONField(null=True, blank=True, verbose_name="条件分支规则")
+
+    # 下一步骤（用于条件分支）
+    next_step_on_pass = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, 
+                                          verbose_name="通过后下一步骤", related_name='prev_steps_pass')
+    next_step_on_reject = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL,
+                                            verbose_name="驳回后下一步骤", related_name='prev_steps_reject')
+
+    # 备注说明
+    description = models.TextField(null=True, blank=True, verbose_name="节点说明")
+    
+    # 多级审批配置（JSON格式存储层级信息）
+    multi_level_config = models.JSONField(null=True, blank=True, verbose_name="多级审批配置", help_text="当approver_type=6时使用，存储多个审批层级的配置")
+
     class Meta:
         db_table = 'lyworkflow_step'
-        verbose_name = '流程步骤'
+        verbose_name = '流程步骤（节点配置）'
         verbose_name_plural = verbose_name
         ordering = ('step_order',)
 
@@ -108,11 +171,14 @@ class WorkflowInstance(CoreModel):
     # 流程状态
     status = models.SmallIntegerField(default=0, choices=STATUS_CHOICES, verbose_name="流程状态")
 
-    current_step = models.IntegerField(default=1, verbose_name="当前步骤")
+    current_step = models.IntegerField(default=1, verbose_name="当前步骤")  # 整数，表示原始步骤顺序
     total_steps = models.IntegerField(default=0, verbose_name="总步骤数")
 
     # 申请数据（JSON格式，支持不同类型的申请表单）
     form_data = models.JSONField(null=True, blank=True, verbose_name="表单数据")
+    
+    # 申请人自选审批人（JSON格式，存储每个节点选择的审批人ID列表）
+    selected_approvers = models.JSONField(null=True, blank=True, verbose_name="申请人自选审批人")
 
     # 备注
     remark = models.TextField(null=True, blank=True, verbose_name="备注")
@@ -145,7 +211,8 @@ class WorkflowTask(CoreModel):
 
     instance = models.ForeignKey(WorkflowInstance, on_delete=models.CASCADE, verbose_name="流程实例", related_name='tasks')
     step = models.ForeignKey(WorkflowStep, on_delete=models.CASCADE, verbose_name="流程步骤")
-    step_order = models.IntegerField(verbose_name="步骤顺序")
+    step_order = models.IntegerField(verbose_name="步骤顺序")  # 整数，表示原始步骤顺序
+    level_order = models.FloatField(default=0.0, verbose_name="层级顺序", help_text="多级审批时使用，如 1.0, 1.1, 1.2；普通步骤为 0.0")
 
     approver = models.ForeignKey('mysystem.Users', on_delete=models.CASCADE, verbose_name="审批人", related_name='workflow_tasks')
 

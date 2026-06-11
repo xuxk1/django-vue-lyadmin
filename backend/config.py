@@ -32,6 +32,28 @@ REDIS_PORT = '6379'
 REDIS_URL = f'redis://:{REDIS_PASSWORD or ""}@{REDIS_HOST}:{REDIS_PORT}'
 
 # ================================================= #
+# ************** 远程服务器登录 配置  ************** #
+# ================================================= #
+
+SSH_HOST = '172.11.130.25'
+SSH_USER = 'sqa'
+SSH_PASSWORD = 'Phlexing_2019'
+SSH_KEY_FILE = '/users/G01/efficiency_portal/.ssh/id_rsa.pub'
+SSH_REMOTE_TEMPLATE_DIR = '/TestHub/sqa/Platform/license'
+SSH_REMOTE_SCRIPT_PATH= '/users/G02/sqa/xxk/lmcrypt_new'
+
+# ================================================= #
+# ************** 邮件 配置  ************** #
+# ================================================= #
+
+MAIL_SMTP_SERVER = "mail.phlexing.com"
+MAIL_PORT = 25
+MAIL_USER = "systemmail@phlexing.com"
+MAIL_PASSWORD = "YueMing#560"
+MAIL_RECIPIENT = "lijiadong"
+MAIL_CC = "xuxiaokui"
+
+# ================================================= #
 # ************** 服务器基本 配置  ************** #
 # ================================================= #
 DEBUG = True #是否调试模式

@@ -16,6 +16,7 @@ from apps.lyworkflow.serializers import (
     WorkflowTaskSerializer, WorkflowLogSerializer, WorkflowApproveSerializer
 )
 from apps.lyworkflow.filters import WorkflowTypeFilter, WorkflowInstanceFilter, WorkflowTaskFilter
+from apps.lyworkflow.engine import FlowEngine
 from mysystem.models import Users
 
 logger = logging.getLogger(__name__)
@@ -102,12 +103,12 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
         return WorkflowInstanceSerializer
 
     def list(self, request, *args, **kwargs):
-        """获取流程列表（根据用户角色过滤）"""
+        """获取流程列表（显示用户相关的流程）"""
         # 超级管理员查看所有
         if request.user.is_superuser:
             return super().list(request, *args, **kwargs)
         
-        # 非超级管理员：查看自己发起的 + 待自己审批的 + 抄送给自己的
+        # 非超级管理员：查看自己发起的 + 待自己审批的
         user_id = request.user.id
         
         # 自己发起的流程
@@ -120,20 +121,14 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
         ).values_list('instance_id', flat=True)
         pending_instances = WorkflowInstance.objects.filter(id__in=pending_task_ids)
         
-        # 抄送给自己的流程
-        cc_instance_ids = WorkflowCCInstance.objects.filter(
-            cc_user_id=user_id
-        ).values_list('instance_id', flat=True)
-        cc_instances = WorkflowInstance.objects.filter(id__in=cc_instance_ids)
-        
         # 合并查询集
-        self.queryset = (my_apply | pending_instances | cc_instances).distinct()
+        self.queryset = (my_apply | pending_instances).distinct()
         
         return super().list(request, *args, **kwargs)
 
     @action(methods=['post'], detail=True)
     def submit(self, request, pk=None):
-        """提交流程"""
+        """提交流程（使用新的流程引擎）"""
         instance = self.get_object()
         
         if instance.status != 0:  # 只有草稿状态可以提交
@@ -143,21 +138,10 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
             return ErrorResponse(msg='只有申请人可以提交流程')
         
         try:
-            with transaction.atomic():
-                # 更新流程状态
-                instance.status = 1  # 审批中
-                instance.current_step = 1
-                instance.save()
-                
-                # 创建第一步的审批任务
-                self._create_tasks(instance, step_order=1)
-                
-                # 通知抄送人员
-                self._notify_cc_users(instance)
-                
-                # 记录日志
-                self._create_log(instance, request.user, 'submit', '提交流程')
-                
+            # 使用流程引擎启动流程
+            engine = FlowEngine(instance)
+            engine.start()
+            
             return SuccessResponse(msg='流程提交成功')
         except Exception as e:
             logger.error(f'提交流程失败: {str(e)}')
@@ -194,6 +178,73 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
             logger.error(f'撤回流程失败: {str(e)}')
             return ErrorResponse(msg=f'撤回流程失败: {str(e)}')
 
+    @action(methods=['put'], detail=True)
+    def reinitiate(self, request, pk=None):
+        """重新发起流程（支持草稿和已撤回状态）"""
+        instance = self.get_object()
+        
+        # 只有草稿(0)或已撤回(4)状态的流程可以重新发起
+        if instance.status not in [0, 4]:
+            return ErrorResponse(msg='只有草稿或已撤回状态的流程可以重新发起')
+        
+        if instance.applicant != request.user:
+            return ErrorResponse(msg='只有申请人可以重新发起流程')
+        
+        # 保存原始状态，用于出错时恢复
+        original_status = instance.status
+        original_current_step = instance.current_step
+        
+        try:
+            with transaction.atomic():
+                # 处理请求数据（可能是 JSON 字符串或字典）
+                import json
+                data = request.data
+                logger.info(f'重新发起流程 - 原始数据类型: {type(data)}, 内容: {data}')
+                
+                if isinstance(data, str):
+                    data = json.loads(data)
+                    logger.info(f'重新发起流程 - 解析后数据类型: {type(data)}, 内容: {data}')
+                
+                # 验证数据格式
+                if not isinstance(data, dict):
+                    raise ValueError(f'请求数据格式错误，应为 JSON 对象，实际为: {type(data)}')
+                
+                # 更新流程数据（只更新允许的字段）
+                serializer = WorkflowInstanceCreateSerializer(instance, data=data, partial=True, context={'request': request})
+                serializer.is_valid(raise_exception=True)
+                logger.info(f'重新发起流程 - 验证通过，准备保存')
+                serializer.save()
+                logger.info(f'重新发起流程 - 保存成功')
+                
+                # 重置流程状态为草稿
+                instance.status = 0
+                instance.current_step = 1
+                instance.save()
+                logger.info(f'重新发起流程 - 状态重置成功')
+                
+                # 注意：不删除之前的审批任务，保留历史记录
+                # 已完成的审批任务（status != 0）会保留在数据库中作为历史记录
+                # 新的流程发起会创建新的审批任务（status = 0）
+                
+                # 记录日志
+                action_type = 'reinitiate' if original_status == 4 else 'submit'
+                action_msg = '重新发起流程' if original_status == 4 else '提交流程'
+                self._create_log(instance, request.user, action_type, action_msg)
+                logger.info(f'重新发起流程 - 完成')
+                
+            return SuccessResponse(msg='流程发起成功')
+        except Exception as e:
+            logger.error(f'重新发起流程失败: {str(e)}', exc_info=True)
+            # 出错时恢复原始状态
+            try:
+                instance.status = original_status
+                instance.current_step = original_current_step
+                instance.save(update_fields=['status', 'current_step'])
+                logger.info(f'重新发起流程 - 状态已恢复为: {original_status}')
+            except Exception as restore_error:
+                logger.error(f'重新发起流程 - 状态恢复失败: {str(restore_error)}')
+            return ErrorResponse(msg=f'流程发起失败: {str(e)}')
+
     @action(methods=['post'], detail=True)
     def cancel(self, request, pk=None):
         """取消流程"""
@@ -222,33 +273,35 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
             logger.error(f'取消流程失败: {str(e)}')
             return ErrorResponse(msg=f'取消流程失败: {str(e)}')
 
-    @action(methods=['get'], detail=False)
-    def my_apply(self, request):
-        """我发起的流程"""
-        self.queryset = WorkflowInstance.objects.filter(applicant=request.user)
-        return super().list(request)
-
-    @action(methods=['get'], detail=False)
-    def my_approve(self, request):
-        """待我审批的流程"""
-        pending_task_ids = WorkflowTask.objects.filter(
-            approver=request.user,
-            status=0
-        ).values_list('instance_id', flat=True)
+    @action(methods=['delete'], detail=True)
+    def delete_instance(self, request, pk=None):
+        """删除流程（仅草稿状态且是申请人）"""
+        instance = self.get_object()
         
-        self.queryset = WorkflowInstance.objects.filter(id__in=pending_task_ids)
-        return super().list(request)
-
-    @action(methods=['get'], detail=False)
-    def my_cc(self, request):
-        """抄送给我的流程"""
-        cc_instance_ids = WorkflowCCInstance.objects.filter(
-            cc_user=request.user
-        ).values_list('instance_id', flat=True)
+        if instance.status != 0:  # 只有草稿状态可以删除
+            return ErrorResponse(msg='只有草稿状态的流程可以删除')
         
-        self.queryset = WorkflowInstance.objects.filter(id__in=cc_instance_ids)
-        return super().list(request)
-
+        if instance.applicant != request.user:
+            return ErrorResponse(msg='只有申请人可以删除流程')
+        
+        try:
+            with transaction.atomic():
+                # 删除相关的任务
+                WorkflowTask.objects.filter(instance=instance).delete()
+                
+                # 删除相关的抄送记录
+                WorkflowCCInstance.objects.filter(instance=instance).delete()
+                
+                # 删除相关的日志
+                WorkflowLog.objects.filter(instance=instance).delete()
+                
+                # 删除流程实例
+                instance.delete()
+                
+            return SuccessResponse(msg='删除成功')
+        except Exception as e:
+            logger.error(f'删除流程失败: {str(e)}')
+            return ErrorResponse(msg=f'删除流程失败: {str(e)}')
     def _create_tasks(self, instance, step_order):
         """创建审批任务"""
         from mysystem.models import Users
@@ -269,12 +322,19 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
                     approver=user
                 )
                 
-                # 发送通知（异步）
+                # 发送通知：优先使用 Celery 异步，失败则同步创建站内消息
                 try:
                     from apps.lyworkflow.tasks import send_workflow_notification
                     send_workflow_notification.delay(user.id, instance.id, 'approve')
+                    logger.info(f'已通过 Celery 异步发送审批通知给用户 {user.name}')
                 except Exception as e:
-                    logger.warning(f'发送审批通知失败: {str(e)}')
+                    # Celery 不可用时，同步创建站内消息
+                    logger.warning(f'Celery 异步通知失败: {str(e)}，改用同步方式创建站内消息')
+                    try:
+                        self._create_sync_notification(user, instance, 'approve')
+                        logger.info(f'已同步创建站内消息给用户 {user.name}')
+                    except Exception as sync_error:
+                        logger.error(f'同步创建站内消息也失败: {str(sync_error)}')
                     
         except WorkflowStep.DoesNotExist:
             logger.warning(f'未找到步骤 {step_order}，流程类型: {instance.workflow_type.name}')
@@ -320,12 +380,19 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
                     step=None
                 )
                 
-                # 发送通知（异步）
+                # 发送通知：优先使用 Celery 异步，失败则同步创建站内消息
                 try:
                     from apps.lyworkflow.tasks import send_workflow_notification
                     send_workflow_notification.delay(user.id, instance.id, 'cc')
+                    logger.info(f'已通过 Celery 异步发送抄送通知给用户 {user.name}')
                 except Exception as e:
-                    logger.warning(f'发送抄送通知失败: {str(e)}')
+                    # Celery 不可用时，同步创建站内消息
+                    logger.warning(f'Celery 异步通知失败: {str(e)}，改用同步方式创建站内消息')
+                    try:
+                        self._create_sync_notification(user, instance, 'cc')
+                        logger.info(f'已同步创建站内消息给用户 {user.name}')
+                    except Exception as sync_error:
+                        logger.error(f'同步创建站内消息也失败: {str(sync_error)}')
 
     def _get_cc_users(self, cc_config, instance):
         """根据抄送配置获取抄送人员列表"""
@@ -356,6 +423,57 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
             action=action,
             action_desc=action_desc,
             remark=remark
+        )
+
+    def _create_sync_notification(self, user, instance, notification_type):
+        """
+        同步创建站内消息通知
+        
+        Args:
+            user: 接收通知的用户对象
+            instance: 流程实例对象
+            notification_type: 通知类型 (approve, cc, reject, return, approved)
+        """
+        from apps.lymessages.models import MyMessage, MyMessageUser
+        
+        # 根据通知类型生成消息内容
+        message_title = ''
+        message_content = ''
+        
+        if notification_type == 'approve':
+            message_title = f'流程审批通知 - {instance.title}'
+            message_content = f'您有一个流程需要审批：{instance.title}，流程编号：{instance.instance_no}'
+        elif notification_type == 'cc':
+            message_title = f'流程抄送通知 - {instance.title}'
+            message_content = f'您被抄送了一个流程：{instance.title}，流程编号：{instance.instance_no}'
+        elif notification_type == 'reject':
+            message_title = f'流程驳回通知 - {instance.title}'
+            message_content = f'您的流程申请已被驳回：{instance.title}，流程编号：{instance.instance_no}'
+        elif notification_type == 'return':
+            message_title = f'流程退回通知 - {instance.title}'
+            message_content = f'您的流程申请已被退回：{instance.title}，流程编号：{instance.instance_no}'
+        elif notification_type == 'approved':
+            message_title = f'流程通过通知 - {instance.title}'
+            message_content = f'您的流程申请已通过审批：{instance.title}，流程编号：{instance.instance_no}'
+        else:
+            message_title = f'流程通知 - {instance.title}'
+            message_content = f'流程状态更新：{instance.title}'
+        
+        # 创建站内消息
+        message = MyMessage.objects.create(
+            msg_title=message_title,
+            msg_content=message_content,
+            msg_chanel=1,  # 系统通知
+            public=False,
+            status=True
+        )
+        
+        # 创建用户消息关联
+        MyMessageUser.objects.create(
+            messageid=message,
+            revuserid=user,
+            is_read=False,
+            is_delete=False
         )
 
 
@@ -391,7 +509,7 @@ class WorkflowTaskViewSet(CustomModelViewSet):
         return self._handle_approval(request, pk, approve_result=3)
 
     def _handle_approval(self, request, pk, approve_result):
-        """处理审批操作"""
+        """处理审批操作（使用新的流程引擎）"""
         task = self.get_object()
         
         # 验证权限
@@ -407,63 +525,15 @@ class WorkflowTaskViewSet(CustomModelViewSet):
         approve_comment = serializer.validated_data.get('approve_comment', '')
         
         try:
-            with transaction.atomic():
-                instance = task.instance
-                
-                # 更新任务状态
-                task.approve_result = approve_result
-                task.approve_comment = approve_comment
-                task.approve_time = datetime.now()
-                
-                if approve_result == 1:  # 通过
-                    task.status = 1
-                elif approve_result == 2:  # 驳回
-                    task.status = 2
-                elif approve_result == 3:  # 退回
-                    task.status = 3
-                
-                task.save()
-                
-                # 记录日志
-                action_map = {1: 'approve', 2: 'reject', 3: 'return'}
-                desc_map = {1: '审批通过', 2: '驳回流程', 3: '退回流程'}
-                self._create_log(instance, request.user, action_map[approve_result], desc_map[approve_result], approve_comment)
-                
-                # 根据审批结果处理流程状态
-                if approve_result == 1:  # 通过
-                    # 检查是否有下一步
-                    next_step_order = task.step_order + 1
-                    next_step = WorkflowStep.objects.filter(
-                        workflow_type=instance.workflow_type,
-                        step_order=next_step_order
-                    ).first()
-                    
-                    if next_step:
-                        # 还有下一步，创建新的审批任务
-                        instance.current_step = next_step_order
-                        instance.save()
-                        instance_viewset = WorkflowInstanceViewSet()
-                        instance_viewset._create_tasks(instance, next_step_order)
-                    else:
-                        # 所有步骤完成，流程通过
-                        instance.status = 2  # 已通过
-                        instance.save()
-                elif approve_result == 2:  # 驳回
-                    # 流程直接结束
-                    instance.status = 3  # 已驳回
-                    instance.save()
-                    
-                    # 取消后续所有待审批任务
-                    WorkflowTask.objects.filter(
-                        instance=instance,
-                        step_order__gt=task.step_order,
-                        status=0
-                    ).update(status=2)
-                elif approve_result == 3:  # 退回
-                    # 退回到申请人
-                    instance.status = 1  # 保持审批中状态，但退回到申请人修改
-                    instance.save()
-                
+            # 使用流程引擎处理审批
+            engine = FlowEngine(task.instance)
+            engine.approve_task(
+                task=task,
+                approve_result=approve_result,
+                comment=approve_comment,
+                operator=request.user
+            )
+            
             return SuccessResponse(msg='审批操作成功')
         except Exception as e:
             logger.error(f'审批操作失败: {str(e)}')
@@ -495,3 +565,69 @@ class WorkflowLogViewSet(CustomModelViewSet):
         if instance_id:
             self.queryset = self.queryset.filter(instance_id=instance_id)
         return super().list(request, *args, **kwargs)
+
+
+class WorkflowDashboardViewSet(CustomModelViewSet):
+    """流程监控大屏视图集"""
+    queryset = WorkflowInstance.objects.none()
+    serializer_class = WorkflowInstanceSerializer
+    # 不需要数据权限过滤
+    extra_filter_backends = []
+
+    @action(methods=['get'], detail=False)
+    def statistics(self, request):
+        """获取流程统计数据"""
+        from django.db import models
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        user = request.user
+        
+        # 基础统计
+        stats = {
+            'total': WorkflowInstance.objects.count(),
+            'draft': WorkflowInstance.objects.filter(status=0).count(),
+            'pending': WorkflowInstance.objects.filter(status=1).count(),
+            'approved': WorkflowInstance.objects.filter(status=2).count(),
+            'rejected': WorkflowInstance.objects.filter(status=3).count(),
+            'withdrawn': WorkflowInstance.objects.filter(status=4).count(),
+        }
+        
+        logger.info(f'流程统计数据: {stats}')
+        
+        # 用户相关统计
+        if not user.is_superuser:
+            stats['my_apply'] = WorkflowInstance.objects.filter(applicant=user).count()
+            stats['my_pending_tasks'] = WorkflowTask.objects.filter(
+                approver=user,
+                status=0
+            ).count()
+        
+        # 按流程类型统计
+        type_stats = WorkflowInstance.objects.values('workflow_type__name').annotate(
+            count=models.Count('id')
+        ).order_by('-count')[:10]
+        
+        stats['by_type'] = list(type_stats)
+        
+        # 最近7天的流程趋势
+        from datetime import timedelta
+        from django.utils import timezone
+        
+        today = timezone.now().date()
+        trends = []
+        for i in range(7):
+            date = today - timedelta(days=6-i)
+            count = WorkflowInstance.objects.filter(
+                create_datetime__date=date
+            ).count()
+            trends.append({
+                'date': date.strftime('%Y-%m-%d'),
+                'count': count
+            })
+        
+        stats['trends'] = trends
+        
+        logger.info(f'最终返回数据: total={stats["total"]}, rejected={stats["rejected"]}, by_type={len(stats["by_type"])}, trends={len(stats["trends"])}')
+        
+        return SuccessResponse(data=stats)

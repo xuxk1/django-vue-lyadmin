@@ -15,7 +15,7 @@ module.exports = {
     API_URL : process.env.NODE_ENV === 'development' ? "http://"+ API_DOMAIN +"/api/" : "https://"+ API_DOMAIN +"/api/",
 
     //标题
-    APP_TITLE : "django-vue-lyadmin后台管理系统",
+    APP_TITLE : "效能运营中心管理系统",
 
 	//是否开启多标签
 	ISMULTITABS: true,
@@ -47,7 +47,7 @@ module.exports = {
     //登录信息数据存储方式 localStorage、sessionStorage
 	STORAGE_METHOD: 'localStorage',
 
-	//请求超时
-	TIMEOUT: 10000,
+	//请求超时（毫秒）- 增加到30秒以支持多级审批的通知创建
+	TIMEOUT: 30000,
 
 }

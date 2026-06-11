@@ -105,14 +105,36 @@
                 <el-table-column min-width="100" prop="vendor" label="Vendor" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="80" prop="version" label="Version" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="150" prop="host_id" label="HostID" show-overflow-tooltip></el-table-column>
-                <el-table-column min-width="100" prop="quantity" label="授权数量" align="center"></el-table-column>
+                <el-table-column min-width="200" prop="quantity" label="授权数量" align="left">
+                    <template #default="scope">
+                        <div class="expandable-content">
+                            <pre v-if="scope.row.quantity && typeof scope.row.quantity === 'object'" :class="{'expanded': expandedQuantities[scope.row.id], 'collapsed': !expandedQuantities[scope.row.id]}" style="margin: 0; font-size: 12px; line-height: 1.5;" v-html="getLimitedQuantity(scope.row.quantity, scope.row.id)"></pre>
+                            <span v-else>{{ scope.row.quantity }}</span>
+                            <div v-if="shouldShowExpandQuantity(scope.row.quantity)" class="expand-btn-group">
+                                <div class="expand-btn" 
+                                     @click="toggleExpand('quantity', scope.row.id)">
+                                    <el-icon><ArrowDown v-if="!expandedQuantities[scope.row.id]" /><ArrowUp v-else /></el-icon>
+                                    {{ expandedQuantities[scope.row.id] ? '收起' : '展开' }}
+                                </div>
+                                <div v-if="expandedQuantities[scope.row.id]" 
+                                     class="copy-btn" 
+                                     @click="copyContent(scope.row.quantity, '授权数量')">
+                                    <el-icon><CopyDocument /></el-icon>
+                                    复制
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </el-table-column>
                 <el-table-column min-width="150" prop="start_date_str" label="开始时间"></el-table-column>
                 <el-table-column min-width="150" prop="end_date_str" label="过期时间"></el-table-column>
                 <el-table-column min-width="100" prop="remaining_days" label="剩余天数" align="center">
                     <template #default="scope">
-                        <el-tag v-if="scope.row.remaining_days > 30" type="success">{{ scope.row.remaining_days }}天</el-tag>
+                        <!-- 已过期显示0天，其他情况用不同颜色区分 -->
+                        <el-tag v-if="scope.row.status === 2" type="danger">0天</el-tag>
+                        <el-tag v-else-if="scope.row.remaining_days > 30" type="success">{{ scope.row.remaining_days }}天</el-tag>
                         <el-tag v-else-if="scope.row.remaining_days > 0" type="warning">{{ scope.row.remaining_days }}天</el-tag>
-                        <el-tag v-else type="danger">已过期</el-tag>
+                        <el-tag v-else type="info">0天</el-tag>
                     </template>
                 </el-table-column>
                 <el-table-column min-width="100" label="状态">
@@ -161,9 +183,11 @@
                 <el-descriptions-item label="开始时间">{{ currentRow.start_date_str }}</el-descriptions-item>
                 <el-descriptions-item label="过期时间">{{ currentRow.end_date_str }}</el-descriptions-item>
                 <el-descriptions-item label="剩余天数">
-                    <el-tag v-if="currentRow.remaining_days > 30" type="success">{{ currentRow.remaining_days }}天</el-tag>
+                    <!-- 已过期显示0天，其他情况用不同颜色区分 -->
+                    <el-tag v-if="currentRow.status === 2" type="danger">0天</el-tag>
+                    <el-tag v-else-if="currentRow.remaining_days > 30" type="success">{{ currentRow.remaining_days }}天</el-tag>
                     <el-tag v-else-if="currentRow.remaining_days > 0" type="warning">{{ currentRow.remaining_days }}天</el-tag>
-                    <el-tag v-else type="danger">已过期</el-tag>
+                    <el-tag v-else type="info">0天</el-tag>
                 </el-descriptions-item>
                 <el-descriptions-item label="状态">{{ currentRow.status_display }}</el-descriptions-item>
                 <el-descriptions-item label="申请人">{{ currentRow.applicant }}</el-descriptions-item>
@@ -194,6 +218,7 @@
                 loadingPage:false,
                 detailDialogVisible: false,
                 currentRow: null,
+                expandedQuantities: {},  // 记录每个行的Quantity是否展开 {id: true/false}
                 statistics: {
                     total: 0,
                     activeCount: 0,
@@ -316,7 +341,109 @@
                 tabSelectHeight += 120
                 tabSelectHeight = this.isFull?tabSelectHeight - 110:tabSelectHeight
                 this.tableHeight = getTableHeight(tabSelectHeight)
-            }
+            },
+            // ========== 展开/收起相关方法 ==========
+            
+            // 切换展开/收起状态
+            toggleExpand(type, rowId) {
+                if (type === 'quantity') {
+                    this.expandedQuantities[rowId] = !this.expandedQuantities[rowId]
+                }
+            },
+            
+            // 获取限制显示的Quantity内容（默认显示3个）
+            getLimitedQuantity(quantity, rowId) {
+                if (!quantity || typeof quantity !== 'object') return JSON.stringify(quantity, null, 2)
+                
+                const isExpanded = this.expandedQuantities[rowId] || false
+                
+                if (isExpanded) {
+                    // 展开状态，显示完整结构
+                    return JSON.stringify(quantity, null, 2)
+                }
+                
+                // 收起状态，展平显示前3个feature
+                const flattenedEntries = []
+                for (const [product, features] of Object.entries(quantity)) {
+                    if (typeof features === 'object' && features !== null) {
+                        // 将每个产品的features展平
+                        for (const [featureName, count] of Object.entries(features)) {
+                            flattenedEntries.push([`${product}/${featureName}`, count])
+                        }
+                    } else {
+                        // 如果不是嵌套对象，直接添加
+                        flattenedEntries.push([product, features])
+                    }
+                }
+                
+                // 只显示前3个，用简洁的文本格式
+                const limited = flattenedEntries.slice(0, 3)
+                const hasMore = flattenedEntries.length > 3
+                
+                // 格式化为易读的文本：每行一个 feature: count
+                const lines = limited.map(([key, value]) => `  "${key}": ${value}`)
+                let result = '{\n' + lines.join(',\n')
+                
+                if (hasMore) {
+                    // 使用特殊标记，前端会用颜色区分显示
+                    result += `,\n  <span class="more-items-hint">... 还有 ${flattenedEntries.length - 3} 个</span>`
+                }
+                
+                result += '\n}'
+                return result
+            },
+            
+            // 判断Quantity是否需要显示展开按钮
+            shouldShowExpandQuantity(quantity) {
+                if (!quantity || typeof quantity !== 'object') return false
+                
+                // 统计所有feature的总数（包括嵌套结构）
+                let totalFeatures = 0
+                for (const [product, features] of Object.entries(quantity)) {
+                    if (typeof features === 'object' && features !== null) {
+                        // 嵌套结构，统计第二层的键数量
+                        totalFeatures += Object.keys(features).length
+                    } else {
+                        // 非嵌套结构，直接计数
+                        totalFeatures += 1
+                    }
+                }
+                
+                return totalFeatures > 3
+            },
+            
+            // 复制内容到剪贴板
+            async copyContent(content, fieldName) {
+                try {
+                    // 将内容转换为字符串
+                    let textToCopy
+                    if (typeof content === 'object' && content !== null) {
+                        textToCopy = JSON.stringify(content, null, 2)
+                    } else {
+                        textToCopy = String(content)
+                    }
+                    
+                    // 使用 Clipboard API
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        await navigator.clipboard.writeText(textToCopy)
+                        this.$message.success(`${fieldName}内容已复制到剪贴板`)
+                    } else {
+                        // 降级方案：使用 textarea
+                        const textarea = document.createElement('textarea')
+                        textarea.value = textToCopy
+                        textarea.style.position = 'fixed'
+                        textarea.style.opacity = '0'
+                        document.body.appendChild(textarea)
+                        textarea.select()
+                        document.execCommand('copy')
+                        document.body.removeChild(textarea)
+                        this.$message.success(`${fieldName}内容已复制到剪贴板`)
+                    }
+                } catch (error) {
+                    console.error('复制失败:', error)
+                    this.$message.error('复制失败，请手动选择内容复制')
+                }
+            },
         },
         mounted() {
             window.addEventListener('resize', this.listenResize);
@@ -360,6 +487,70 @@
         .stat-label {
             font-size: 14px;
             color: #909399;
+        }
+    }
+}
+
+// 展开/收起样式
+.expandable-content {
+    position: relative;
+    
+    pre {
+        overflow: hidden;
+        transition: max-height 0.3s ease;
+        white-space: pre-wrap;  // 保留换行和空格，但允许自动换行
+        word-break: break-all;  // 长单词或URL可以换行
+        
+        // 收起状态下的提示文字样式
+        &.collapsed {
+            ::v-deep .more-items-hint {
+                color: #909399;  // 灰色，表示还有更多内容
+                font-style: italic;
+                font-weight: 500;
+            }
+        }
+        
+        &.expanded {
+            max-height: 2000px;  // 展开后的高度，足够显示大量内容
+            overflow-y: auto;  // 内容过多时显示滚动条
+        }
+    }
+    
+    .expand-btn-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 4px;
+    }
+    
+    .expand-btn,
+    .copy-btn {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: #409eff;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        transition: all 0.2s;
+        
+        &:hover {
+            color: #66b1ff;
+            background-color: #ecf5ff;
+        }
+        
+        .el-icon {
+            font-size: 14px;
+        }
+    }
+    
+    .copy-btn {
+        color: #67c23a;
+        
+        &:hover {
+            color: #85ce61;
+            background-color: #f0f9eb;
         }
     }
 }

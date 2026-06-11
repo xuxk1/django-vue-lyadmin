@@ -76,7 +76,8 @@ class LicenseRecordSerializer(CustomModelSerializer):
     """
     license_type_display = serializers.SerializerMethodField(read_only=True)
     status_display = serializers.SerializerMethodField(read_only=True)
-    application_info = serializers.SerializerMethodField(read_only=True)
+    applicant = serializers.SerializerMethodField(read_only=True)
+    customer_name = serializers.SerializerMethodField(read_only=True)
     
     def get_license_type_display(self, obj):
         return obj.get_license_type_display()
@@ -84,14 +85,17 @@ class LicenseRecordSerializer(CustomModelSerializer):
     def get_status_display(self, obj):
         return obj.get_status_display()
     
-    def get_application_info(self, obj):
+    def get_applicant(self, obj):
+        """获取申请人（从关联的申请记录中获取）"""
         if obj.application:
-            return {
-                'id': obj.application.id,
-                'applicant': obj.application.applicant,
-                'customer_name': obj.application.customer_name
-            }
-        return None
+            return obj.application.applicant
+        return ''
+    
+    def get_customer_name(self, obj):
+        """获取客户名称（从关联的申请记录中获取）"""
+        if obj.application:
+            return obj.application.customer_name
+        return ''
     
     class Meta:
         model = LicenseRecord
@@ -101,7 +105,7 @@ class LicenseRecordSerializer(CustomModelSerializer):
             'file_relative_path', 'directory', 'full_path', 'feature', 'vendor',
             'version', 'host_id', 'start_time', 'end_time', 'start_date_str', 'end_date_str',
             'remaining_days', 'quantity', 'status', 'extra_info',
-            'license_type_display', 'status_display', 'application_info',
+            'license_type_display', 'status_display', 'applicant', 'customer_name',
             'create_datetime', 'update_datetime'
         ]
         extra_kwargs = {

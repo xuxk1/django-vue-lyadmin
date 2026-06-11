@@ -73,29 +73,70 @@
         <Pagination v-bind:child-msg="pageparm" @callFather="callFather" :hide-on-single-page="false"></Pagination>
 
         <!-- 新增/编辑对话框 -->
-        <el-dialog v-model="editDialogVisible" :title="editTitle" width="600px">
+        <el-dialog v-model="editDialogVisible" :title="editTitle" width="900px">
             <el-form :model="editForm" label-width="100px">
-                <el-form-item label="流程名称" required>
-                    <el-input v-model="editForm.name" placeholder="请输入流程名称"></el-input>
-                </el-form-item>
-                <el-form-item label="流程编码" required>
-                    <el-input v-model="editForm.code" placeholder="请输入流程编码（英文）"></el-input>
-                </el-form-item>
-                <el-form-item label="流程描述">
-                    <el-input v-model="editForm.description" type="textarea" :rows="3" placeholder="请输入流程描述"></el-input>
-                </el-form-item>
-                <el-form-item label="图标">
-                    <el-input v-model="editForm.icon" placeholder="请输入图标class"></el-input>
-                </el-form-item>
-                <el-form-item label="状态">
-                    <el-radio-group v-model="editForm.status">
-                        <el-radio :label="1">启用</el-radio>
-                        <el-radio :label="0">禁用</el-radio>
-                    </el-radio-group>
-                </el-form-item>
-                <el-form-item label="排序">
-                    <el-input-number v-model="editForm.sort" :min="1" :max="999"></el-input-number>
-                </el-form-item>
+                <!-- 基本信息区域 -->
+                <div style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #EBEEF5;">
+                    <h4 style="margin-bottom: 15px;">基本信息</h4>
+                    <el-form-item label="流程名称" required>
+                        <el-input v-model="editForm.name" placeholder="请输入流程名称"></el-input>
+                    </el-form-item>
+                    <el-form-item label="流程编码" required>
+                        <el-input v-model="editForm.code" placeholder="请输入流程编码（英文）"></el-input>
+                    </el-form-item>
+                    <el-form-item label="流程描述">
+                        <el-input v-model="editForm.description" type="textarea" :rows="3" placeholder="请输入流程描述"></el-input>
+                    </el-form-item>
+                    <el-form-item label="图标">
+                        <el-input v-model="editForm.icon" placeholder="请输入图标class"></el-input>
+                    </el-form-item>
+                    <el-form-item label="状态">
+                        <el-radio-group v-model="editForm.status">
+                            <el-radio :label="1">启用</el-radio>
+                            <el-radio :label="0">禁用</el-radio>
+                        </el-radio-group>
+                    </el-form-item>
+                    <el-form-item label="排序">
+                        <el-input-number v-model="editForm.sort" :min="1" :max="999"></el-input-number>
+                    </el-form-item>
+                </div>
+                
+                <!-- 表单配置区域 -->
+                <div>
+                    <h4 style="margin-bottom: 15px;">流程内容（表单配置）</h4>
+                    <div style="margin-bottom: 10px;">
+                        <el-button type="primary" icon="Plus" @click="handleAddFormField">添加字段</el-button>
+                        <el-alert
+                            title="提示：配置发起流程时需要填写的表单字段"
+                            type="info"
+                            :closable="false"
+                            show-icon
+                            style="margin-top: 10px;"
+                        />
+                    </div>
+                    <el-table :data="formFieldsData" border style="width: 100%">
+                        <el-table-column prop="label" label="字段标签" width="150"></el-table-column>
+                        <el-table-column prop="field" label="字段名" width="150"></el-table-column>
+                        <el-table-column prop="type" label="字段类型" width="120">
+                            <template #default="scope">
+                                <el-tag size="small">{{ getFieldTypeLabel(scope.row.type) }}</el-tag>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="required" label="是否必填" width="100" align="center">
+                            <template #default="scope">
+                                <el-tag v-if="scope.row.required" type="success" size="small">是</el-tag>
+                                <el-tag v-else type="info" size="small">否</el-tag>
+                            </template>
+                        </el-table-column>
+                        <el-table-column prop="placeholder" label="占位符" min-width="150" show-overflow-tooltip></el-table-column>
+                        <el-table-column label="操作" width="150" fixed="right">
+                            <template #default="scope">
+                                <span class="table-operate-btn" @click="handleEditFormField(scope.row, scope.$index)">编辑</span>
+                                <span class="table-operate-btn" @click="handleDeleteFormField(scope.$index)" style="color: #F56C6C;">删除</span>
+                            </template>
+                        </el-table-column>
+                    </el-table>
+                </div>
             </el-form>
             <template #footer>
                 <el-button @click="editDialogVisible = false">取消</el-button>
@@ -124,6 +165,12 @@
                         </span>
                     </template>
                 </el-table-column>
+                <el-table-column label="审批模式" width="100" align="center">
+                    <template #default="scope">
+                        <el-tag v-if="scope.row.sign_mode==1" type="primary" size="small">或签</el-tag>
+                        <el-tag v-else type="success" size="small">会签</el-tag>
+                    </template>
+                </el-table-column>
                 <el-table-column label="允许退回" width="100" align="center">
                     <template #default="scope">
                         <el-tag v-if="scope.row.allow_return" type="success" size="small">是</el-tag>
@@ -134,6 +181,23 @@
                     <template #default="scope">
                         <el-tag v-if="scope.row.allow_reject" type="success" size="small">是</el-tag>
                         <el-tag v-else type="info" size="small">否</el-tag>
+                    </template>
+                </el-table-column>
+                <el-table-column label="超时设置" width="120" align="center">
+                    <template #default="scope">
+                        <span v-if="scope.row.timeout_hours">
+                            {{ scope.row.timeout_hours }}小时
+                            <el-tag v-if="scope.row.auto_action==1" type="success" size="small">自动通过</el-tag>
+                            <el-tag v-else-if="scope.row.auto_action==2" type="warning" size="small">自动退回</el-tag>
+                        </span>
+                        <span v-else>-</span>
+                    </template>
+                </el-table-column>
+                <el-table-column label="通知方式" width="150" align="center">
+                    <template #default="scope">
+                        <el-tag v-if="scope.row.notify_email" type="info" size="small">邮件</el-tag>
+                        <el-tag v-if="scope.row.notify_message" type="info" size="small">站内信</el-tag>
+                        <el-tag v-if="scope.row.notify_sms" type="info" size="small">短信</el-tag>
                     </template>
                 </el-table-column>
                 <el-table-column label="操作" width="150" fixed="right">
@@ -149,7 +213,7 @@
         </el-dialog>
 
         <!-- 新增/编辑步骤对话框 -->
-        <el-dialog v-model="stepEditDialogVisible" :title="stepEditTitle" width="600px">
+        <el-dialog v-model="stepEditDialogVisible" :title="stepEditTitle" width="700px">
             <el-form :model="stepForm" label-width="120px">
                 <el-form-item label="步骤名称" required>
                     <el-input v-model="stepForm.step_name" placeholder="请输入步骤名称"></el-input>
@@ -180,11 +244,51 @@
                         <el-option v-for="item in users" :key="item.id" :label="item.name" :value="item.id"></el-option>
                     </el-select>
                 </el-form-item>
+                
+                <!-- 多人审批模式 -->
+                <el-form-item label="审批模式">
+                    <el-radio-group v-model="stepForm.sign_mode">
+                        <el-radio :label="1">或签（一人审批即可）</el-radio>
+                        <el-radio :label="2">会签（所有人都需审批）</el-radio>
+                    </el-radio-group>
+                </el-form-item>
+                
+                <!-- 退回设置 -->
                 <el-form-item label="允许退回">
                     <el-switch v-model="stepForm.allow_return"></el-switch>
                 </el-form-item>
                 <el-form-item label="允许驳回">
                     <el-switch v-model="stepForm.allow_reject"></el-switch>
+                </el-form-item>
+                
+                <!-- 超时设置 -->
+                <el-divider content-position="left">超时设置</el-divider>
+                <el-form-item label="超时时间(小时)">
+                    <el-input-number v-model="stepForm.timeout_hours" :min="1" :max="720" placeholder="不填则不限制"></el-input-number>
+                </el-form-item>
+                <el-form-item label="超时自动处理" v-if="stepForm.timeout_hours">
+                    <el-select v-model="stepForm.auto_action" placeholder="请选择" style="width: 100%">
+                        <el-option label="不自动处理" :value="0"></el-option>
+                        <el-option label="自动通过" :value="1"></el-option>
+                        <el-option label="自动退回" :value="2"></el-option>
+                    </el-select>
+                </el-form-item>
+                
+                <!-- 通知设置 -->
+                <el-divider content-position="left">通知设置</el-divider>
+                <el-form-item label="邮件通知">
+                    <el-switch v-model="stepForm.notify_email"></el-switch>
+                </el-form-item>
+                <el-form-item label="站内信通知">
+                    <el-switch v-model="stepForm.notify_message"></el-switch>
+                </el-form-item>
+                <el-form-item label="短信通知">
+                    <el-switch v-model="stepForm.notify_sms"></el-switch>
+                </el-form-item>
+                
+                <!-- 节点说明 -->
+                <el-form-item label="节点说明">
+                    <el-input v-model="stepForm.description" type="textarea" :rows="2" placeholder="请输入节点说明"></el-input>
                 </el-form-item>
             </el-form>
             <template #footer>
@@ -265,6 +369,52 @@
                 <el-button type="primary" @click="handleCCSubmit" :loading="ccSubmitLoading">确定</el-button>
             </template>
         </el-dialog>
+
+        <!-- 新增/编辑表单字段对话框 -->
+        <el-dialog v-model="fieldEditDialogVisible" :title="fieldEditTitle" width="600px">
+            <el-form :model="fieldForm" label-width="100px">
+                <el-form-item label="字段标签" required>
+                    <el-input v-model="fieldForm.label" placeholder="如：产品名称"></el-input>
+                </el-form-item>
+                <el-form-item label="字段名" required>
+                    <el-input v-model="fieldForm.field" placeholder="如：product_name（英文）"></el-input>
+                </el-form-item>
+                <el-form-item label="字段类型" required>
+                    <el-select v-model="fieldForm.type" placeholder="请选择" style="width: 100%">
+                        <el-option label="单行文本" value="input"></el-option>
+                        <el-option label="多行文本" value="textarea"></el-option>
+                        <el-option label="数字" value="number"></el-option>
+                        <el-option label="下拉选择" value="select"></el-option>
+                        <el-option label="单选框" value="radio"></el-option>
+                        <el-option label="复选框" value="checkbox"></el-option>
+                        <el-option label="日期" value="date"></el-option>
+                        <el-option label="日期时间" value="datetime"></el-option>
+                        <el-option label="文件上传" value="upload"></el-option>
+                    </el-select>
+                </el-form-item>
+                <el-form-item label="是否必填">
+                    <el-switch v-model="fieldForm.required"></el-switch>
+                </el-form-item>
+                <el-form-item label="占位符">
+                    <el-input v-model="fieldForm.placeholder" placeholder="请输入占位符提示"></el-input>
+                </el-form-item>
+                <el-form-item label="默认值">
+                    <el-input v-model="fieldForm.defaultValue" placeholder="可选"></el-input>
+                </el-form-item>
+                <el-form-item label="选项配置" v-if="fieldForm.type === 'select' || fieldForm.type === 'radio' || fieldForm.type === 'checkbox'">
+                    <el-input 
+                        v-model="fieldForm.options" 
+                        type="textarea" 
+                        :rows="3" 
+                        placeholder="每行一个选项，格式：label:value&#10;例如：&#10;基线版本:baseline&#10;客户定制版本:custom"
+                    ></el-input>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="fieldEditDialogVisible = false">取消</el-button>
+                <el-button type="primary" @click="handleFieldSubmit" :loading="fieldSubmitLoading">确定</el-button>
+            </template>
+        </el-dialog>
     </div>
 </template>
 
@@ -286,17 +436,21 @@
                 submitLoading: false,
                 stepSubmitLoading: false,
                 ccSubmitLoading: false,
+                fieldSubmitLoading: false,  // 字段编辑加载状态
                 editDialogVisible: false,
                 stepDialogVisible: false,
                 stepEditDialogVisible: false,
                 ccDialogVisible: false,
                 ccEditDialogVisible: false,
+                fieldEditDialogVisible: false,  // 字段编辑对话框
                 editTitle: '新增流程类型',
                 stepEditTitle: '新增步骤',
                 ccEditTitle: '新增抄送',
+                fieldEditTitle: '新增字段',
                 currentWorkflowType: null,
                 stepsData: [],
                 ccData: [],
+                formFieldsData: [],  // 表单字段数据
                 roles: [],
                 depts: [],
                 users: [],
@@ -319,7 +473,17 @@
                     description: '',
                     icon: '',
                     status: 1,
-                    sort: 1
+                    sort: 1,
+                    form_schema: null  // 表单配置
+                },
+                fieldForm: {
+                    label: '',
+                    field: '',
+                    type: 'input',
+                    required: false,
+                    placeholder: '',
+                    defaultValue: '',
+                    options: ''  // 选项配置（用于 select/radio/checkbox）
                 },
                 stepForm: {
                     id: '',
@@ -330,8 +494,15 @@
                     approver_role: '',
                     approver_dept: '',
                     approver_users: [],
+                    sign_mode: 1,  // 默认为或签
                     allow_return: true,
-                    allow_reject: false
+                    allow_reject: false,
+                    timeout_hours: null,  // 超时时间
+                    auto_action: 0,  // 不自动处理
+                    notify_email: true,  // 邮件通知
+                    notify_message: true,  // 站内信通知
+                    notify_sms: false,  // 短信通知
+                    description: ''  // 节点说明
                 },
                 ccForm: {
                     id: '',
@@ -433,13 +604,25 @@
                     description: '',
                     icon: '',
                     status: 1,
-                    sort: 1
+                    sort: 1,
+                    form_schema: null
                 }
+                this.formFieldsData = []  // 清空字段数据
                 this.editTitle = '新增流程类型'
                 this.editDialogVisible = true
             },
             handleEdit(row){
                 this.editForm = {...row}
+                // 解析表单配置
+                if(row.form_schema) {
+                    try {
+                        this.formFieldsData = typeof row.form_schema === 'string' ? JSON.parse(row.form_schema) : row.form_schema
+                    } catch(e) {
+                        this.formFieldsData = []
+                    }
+                } else {
+                    this.formFieldsData = []
+                }
                 this.editTitle = '编辑流程类型'
                 this.editDialogVisible = true
             },
@@ -450,6 +633,9 @@
                 }
                 
                 let vm = this
+                // 将表单字段数据转换为 JSON 字符串保存到 form_schema
+                vm.editForm.form_schema = JSON.stringify(vm.formFieldsData)
+                
                 vm.submitLoading = true
                 let apiCall = vm.editForm.id ? workflowTypeUpdate(vm.editForm) : workflowTypeAdd(vm.editForm)
                 apiCall.then(res => {
@@ -512,8 +698,15 @@
                     approver_role: '',
                     approver_dept: '',
                     approver_users: [],
+                    sign_mode: 1,  // 默认为或签
                     allow_return: true,
-                    allow_reject: false
+                    allow_reject: false,
+                    timeout_hours: null,  // 超时时间
+                    auto_action: 0,  // 不自动处理
+                    notify_email: true,  // 邮件通知
+                    notify_message: true,  // 站内信通知
+                    notify_sms: false,  // 短信通知
+                    description: ''  // 节点说明
                 }
                 this.stepEditTitle = '新增步骤'
                 this.stepEditDialogVisible = true
@@ -637,6 +830,109 @@
                         vm.loadingPage = false
                         vm.$message.error('删除失败')
                     })
+                }).catch(() => {})
+            },
+            // ========== 表单字段配置相关方法 ==========
+            getFieldTypeLabel(type) {
+                const typeMap = {
+                    'input': '单行文本',
+                    'textarea': '多行文本',
+                    'number': '数字',
+                    'select': '下拉选择',
+                    'radio': '单选框',
+                    'checkbox': '复选框',
+                    'date': '日期',
+                    'datetime': '日期时间',
+                    'upload': '文件上传'
+                }
+                return typeMap[type] || type
+            },
+            handleAddFormField() {
+                this.fieldForm = {
+                    label: '',
+                    field: '',
+                    type: 'input',
+                    required: false,
+                    placeholder: '',
+                    defaultValue: '',
+                    options: ''
+                }
+                this.fieldEditTitle = '新增字段'
+                this.fieldEditDialogVisible = true
+            },
+            handleEditFormField(row, index) {
+                this.fieldForm = {...row}
+                // 如果是选项类型，将 options 数组转为字符串
+                if(row.options && Array.isArray(row.options)) {
+                    this.fieldForm.options = row.options.map(opt => `${opt.label}:${opt.value}`).join('\n')
+                }
+                this._editingFieldIndex = index  // 记录正在编辑的字段索引
+                this.fieldEditTitle = '编辑字段'
+                this.fieldEditDialogVisible = true
+            },
+            handleFieldSubmit() {
+                if(!this.fieldForm.label || !this.fieldForm.field) {
+                    this.$message.warning('请填写字段标签和字段名')
+                    return
+                }
+                
+                // 验证字段名（只能包含字母、数字、下划线）
+                if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(this.fieldForm.field)) {
+                    this.$message.warning('字段名只能包含字母、数字和下划线，且不能以数字开头')
+                    return
+                }
+                
+                let vm = this
+                vm.fieldSubmitLoading = true
+                
+                // 解析选项配置
+                let fieldData = {...vm.fieldForm}
+                if(fieldData.type === 'select' || fieldData.type === 'radio' || fieldData.type === 'checkbox') {
+                    if(fieldData.options) {
+                        try {
+                            // 将 "label:value\nlabel2:value2" 格式转换为 [{label: 'label', value: 'value'}, ...]
+                            fieldData.options = fieldData.options.split('\n')
+                                .filter(line => line.trim())
+                                .map(line => {
+                                    const parts = line.split(':')
+                                    return {
+                                        label: parts[0].trim(),
+                                        value: parts.length > 1 ? parts[1].trim() : parts[0].trim()
+                                    }
+                                })
+                        } catch(e) {
+                            vm.fieldSubmitLoading = false
+                            vm.$message.error('选项配置格式错误')
+                            return
+                        }
+                    } else {
+                        fieldData.options = []
+                    }
+                }
+                
+                // 判断是新增还是编辑
+                if(vm._editingFieldIndex !== undefined) {
+                    // 编辑模式：更新现有字段
+                    vm.formFieldsData[vm._editingFieldIndex] = fieldData
+                    delete vm._editingFieldIndex
+                } else {
+                    // 新增模式：添加到列表
+                    vm.formFieldsData.push(fieldData)
+                }
+                
+                vm.fieldSubmitLoading = false
+                vm.fieldEditDialogVisible = false
+                vm.$message.success(vm._editingFieldIndex !== undefined ? '编辑成功' : '新增成功')
+            },
+            handleDeleteFormField(index) {
+                let vm = this
+                vm.$confirm('确认要删除该字段吗？', '提示', {
+                    confirmButtonText: '确定',
+                    cancelButtonText: '取消',
+                    type: 'warning'
+                }).then(() => {
+                    vm.formFieldsData.splice(index, 1)
+                    vm.$message.success('删除成功')
                 }).catch(() => {})
             }
         }

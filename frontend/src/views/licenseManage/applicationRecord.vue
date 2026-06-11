@@ -74,12 +74,6 @@
                     </template>
                 </el-table-column>
                 <el-table-column min-width="150" prop="keyword" label="关键字" show-overflow-tooltip></el-table-column>
-                <el-table-column min-width="150" prop="serial_number" label="申请序列号" show-overflow-tooltip>
-                    <template #default="scope">
-                        <el-tag v-if="scope.row.serial_number" type="primary" size="small">{{ scope.row.serial_number }}</el-tag>
-                        <span v-else style="color: #909399;">未设置</span>
-                    </template>
-                </el-table-column>
                 <el-table-column min-width="120" prop="customer_name" label="客户名称" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="150" prop="mac_address" label="MAC Address/HostID" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="200" prop="quantity" label="授权数量" align="left">
@@ -134,10 +128,10 @@
                         <span class="table-operate-btn" @click="handleEdit(scope.row, 'edit')" v-show="hasPermission(this.$route.name,'Update')">编辑</span>
                         <span 
                             class="table-operate-btn" 
-                            :class="{ 'disabled-btn': isEndTimeExpired(scope.row.end_time) || !scope.row.start_time || !scope.row.end_time }"
-                            @click="!isEndTimeExpired(scope.row.end_time) && scope.row.start_time && scope.row.end_time && handleGenerate(scope.row)" 
+                            :class="{ 'disabled-btn': isEndTimeExpired(scope.row.end_time) || !scope.row.start_time || !scope.row.end_time || scope.row.status === 1 || scope.row.status === 2 }"
+                            @click="!isEndTimeExpired(scope.row.end_time) && scope.row.start_time && scope.row.end_time && scope.row.status !== 1 && scope.row.status !== 2 && handleGenerate(scope.row)" 
                             v-show="hasPermission(this.$route.name,'Generate') && (scope.row.status==3)"
-                            :title="!scope.row.start_time || !scope.row.end_time ? '开始时间或结束时间未设置，无法制作' : (isEndTimeExpired(scope.row.end_time) ? '结束时间已过期，无法制作' : '制作License')"
+                            :title="!scope.row.start_time || !scope.row.end_time ? '开始时间或结束时间未设置，无法制作' : (isEndTimeExpired(scope.row.end_time) ? '结束时间已过期，无法制作' : (scope.row.status === 1 ? 'License已制作成功，无需再次制作' : (scope.row.status === 2 ? 'License正在制作中...' : '制作License')))"
                         >制作License</span>
                         <span class="table-operate-btn" @click="handleRetry(scope.row)" v-show="hasPermission(this.$route.name,'Retry') && scope.row.status==0 && scope.row.retry_count < (scope.row.max_retry_count || 3)">重试</span>
                         <span class="table-operate-btn" @click="handleViewDetail(scope.row)" v-show="hasPermission(this.$route.name,'Retrieve')">详情</span>
@@ -189,6 +183,13 @@
                         </el-form-item>
                     </el-col>
                     <el-col :span="12">
+                        <el-form-item label="申请人账号" prop="applicant_id">
+                            <el-input v-model="form.applicant_id" placeholder="请输入申请人账号（如ltjiadong）" clearable></el-input>
+                        </el-form-item>
+                    </el-col>
+                </el-row>
+                <el-row :gutter="20">
+                    <el-col :span="12">
                         <el-form-item label="License类型" prop="application_type">
                             <el-select v-model="form.application_type" placeholder="请选择" style="width: 100%">
                                 <el-option label="FlexNet" value="flexnet"></el-option>
@@ -196,8 +197,6 @@
                             </el-select>
                         </el-form-item>
                     </el-col>
-                </el-row>
-                <el-row :gutter="20">
                     <el-col :span="12">
                         <el-form-item label="客户名称" prop="customer_name">
                             <el-input v-model="form.customer_name" placeholder="请输入客户名称" clearable></el-input>

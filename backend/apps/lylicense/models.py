@@ -107,7 +107,7 @@ class LicenseRecord(BaseModel):
     remaining_days = models.IntegerField(default=0, verbose_name="剩余天数")
     
     # 授权信息
-    quantity = models.IntegerField(default=1, verbose_name="授权数量")
+    quantity = models.JSONField(null=True, blank=True, verbose_name="授权数量")  # 存储 Feature 数量字典，与 LicenseApplication 保持一致，如 {"Feature1": 10, "Feature2": 5}
     
     # 状态
     status = models.IntegerField(default=0, choices=STATUS, verbose_name="状态")
@@ -123,11 +123,12 @@ class LicenseRecord(BaseModel):
     
     def save(self, *args, **kwargs):
         """保存时自动计算剩余天数和格式化日期"""
-        from datetime import datetime
+        from datetime import datetime, date
         
         # 项目USE_TZ=False，使用本地时间
+        # 使用 date.today() 而不是 datetime.now()，因为 end_time 是 DateField
         if self.end_time:
-            now = datetime.now()
+            now = date.today()  # 使用 date 而不是 datetime
             delta = self.end_time - now
             self.remaining_days = max(0, delta.days)
         

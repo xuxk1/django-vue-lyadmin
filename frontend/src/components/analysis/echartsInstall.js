@@ -5,8 +5,8 @@
 import * as echarts from "echarts/core";
 
 //
-/** 引入柱状图and折线图图表，图表后缀都为 Chart  */
-import { BarChart, LineChart } from "echarts/charts";
+/** 引入柱状图、折线图、饼图图表，图表后缀都为 Chart  */
+import { BarChart, LineChart, PieChart } from "echarts/charts";
 
 // 引入提示框，标题，直角坐标系，数据集，内置数据转换器组件，组件后缀都为 Component
 import {
@@ -35,11 +35,23 @@ echarts.use([
     DatasetComponent,
     TransformComponent,
     BarChart,
+    LineChart,
+    PieChart,
     LabelLayout,
     UniversalTransition,
     CanvasRenderer,
-    LineChart,
 ]);
 
 // 导出
 export default echarts;
+
+// 静默 ECharts 的 DOM 尺寸警告
+if (typeof window !== 'undefined') {
+    const originalWarn = console.warn;
+    console.warn = function(...args) {
+        if (args[0] && typeof args[0] === 'string' && args[0].includes('Can\'t get DOM width or height')) {
+            return; // 静默此警告
+        }
+        originalWarn.apply(console, args);
+    };
+}
