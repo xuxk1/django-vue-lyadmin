@@ -165,6 +165,7 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
             with transaction.atomic():
                 # 更新流程状态
                 instance.status = 4  # 已撤回
+                instance.current_step = instance.total_steps  # 更新当前步骤为总步骤数
                 instance.save()
                 
                 # 取消所有待审批任务
@@ -260,6 +261,7 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
             with transaction.atomic():
                 # 更新流程状态
                 instance.status = 5  # 已取消
+                instance.current_step = instance.total_steps  # 更新当前步骤为总步骤数
                 instance.save()
                 
                 # 取消所有待审批任务
@@ -323,18 +325,18 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
                 )
                 
                 # 发送通知：优先使用 Celery 异步，失败则同步创建站内消息
-                try:
-                    from apps.lyworkflow.tasks import send_workflow_notification
-                    send_workflow_notification.delay(user.id, instance.id, 'approve')
-                    logger.info(f'已通过 Celery 异步发送审批通知给用户 {user.name}')
-                except Exception as e:
-                    # Celery 不可用时，同步创建站内消息
-                    logger.warning(f'Celery 异步通知失败: {str(e)}，改用同步方式创建站内消息')
-                    try:
-                        self._create_sync_notification(user, instance, 'approve')
-                        logger.info(f'已同步创建站内消息给用户 {user.name}')
-                    except Exception as sync_error:
-                        logger.error(f'同步创建站内消息也失败: {str(sync_error)}')
+                # try:
+                #     from apps.lyworkflow.tasks import send_workflow_notification
+                #     send_workflow_notification.delay(user.id, instance.id, 'approve')
+                #     logger.info(f'已通过 Celery 异步发送审批通知给用户 {user.name}')
+                # except Exception as e:
+                #     # Celery 不可用时，同步创建站内消息
+                #     logger.warning(f'Celery 异步通知失败: {str(e)}，改用同步方式创建站内消息')
+                #     try:
+                #         self._create_sync_notification(user, instance, 'approve')
+                #         logger.info(f'已同步创建站内消息给用户 {user.name}')
+                #     except Exception as sync_error:
+                #         logger.error(f'同步创建站内消息也失败: {str(sync_error)}')
                     
         except WorkflowStep.DoesNotExist:
             logger.warning(f'未找到步骤 {step_order}，流程类型: {instance.workflow_type.name}')
@@ -522,7 +524,12 @@ class WorkflowTaskViewSet(CustomModelViewSet):
         serializer = WorkflowApproveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
-        approve_comment = serializer.validated_data.get('approve_comment', '')
+        approve_comment = serializer.validated_data.get('approve_comment', '').strip()
+        
+        # 驳回(2)和退回(3)时必须填写审批意见
+        if approve_result in [2, 3]:
+            if not approve_comment:
+                return ErrorResponse(msg='选择驳回或退回时，审批意见为必填项')
         
         try:
             # 使用流程引擎处理审批

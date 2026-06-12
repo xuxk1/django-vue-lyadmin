@@ -261,9 +261,16 @@
                 <el-form-item label="审批结果" required>
                     <el-radio-group v-model="approveForm.approve_result">
                         <el-radio :label="1">通过</el-radio>
-                        <el-radio :label="2">驳回</el-radio>
-                        <el-radio :label="3">退回</el-radio>
+                        <!-- 只有当步骤配置允许驳回时才显示驳回选项 -->
+                        <el-radio :label="2" v-if="currentTask && currentTask.allow_reject">驳回</el-radio>
+                        <!-- 只有当步骤配置允许退回时才显示退回选项 -->
+                        <el-radio :label="3" v-if="currentTask && currentTask.allow_return">退回</el-radio>
                     </el-radio-group>
+                    <!-- 提示信息 -->
+                    <div v-if="currentTask && (!currentTask.allow_reject || !currentTask.allow_return)" style="margin-top: 8px; color: #909399; font-size: 12px;">
+                        <span v-if="!currentTask.allow_reject">· 当前节点不允许驳回操作</span>
+                        <span v-if="!currentTask.allow_return" style="margin-left: 10px;">· 当前节点不允许退回操作</span>
+                    </div>
                 </el-form-item>
                 <el-form-item label="审批意见" :required="isCommentRequired">
                     <el-input v-model="approveForm.approve_comment" type="textarea" :rows="4" placeholder="请输入审批意见"></el-input>
@@ -1086,6 +1093,18 @@
                 
                 const stepLevelOrder = this.getStepLevelOrder(step)
                 
+                // 检查该步骤是否被驳回或退回
+                const isRejected = this.checkStepIsRejected(stepLevelOrder)
+                if (isRejected) {
+                    return 'danger' // 已驳回/退回
+                }
+                
+                // 检查该步骤是否已完成（有审批通过的记录）
+                const isCompleted = this.checkStepIsCompleted(stepLevelOrder)
+                if (isCompleted) {
+                    return 'success' // 已完成
+                }
+                
                 // 检查该步骤是否有待审批的任务
                 const hasPendingTasks = this.checkHasPendingTasks(stepLevelOrder)
                 
@@ -1096,6 +1115,10 @@
                 } else if (stepLevelOrder == this.currentRow.current_step) {
                     return 'warning' // 当前节点
                 } else {
+                    // 对于后续节点，需要检查流程是否已经终止（驳回/退回）
+                    if (this.isWorkflowTerminated()) {
+                        return 'info' // 流程已终止，后续节点显示灰色
+                    }
                     return 'info' // 未开始
                 }
             },
@@ -1113,6 +1136,18 @@
                 
                 const stepLevelOrder = this.getStepLevelOrder(step)
                 
+                // 检查该步骤是否被驳回或退回
+                const isRejected = this.checkStepIsRejected(stepLevelOrder)
+                if (isRejected) {
+                    return '#F56C6C' // 红色 - 已驳回/退回
+                }
+                
+                // 检查该步骤是否已完成（有审批通过的记录）
+                const isCompleted = this.checkStepIsCompleted(stepLevelOrder)
+                if (isCompleted) {
+                    return '#67C23A' // 绿色 - 已完成
+                }
+                
                 // 检查该步骤是否有待审批的任务
                 const hasPendingTasks = this.checkHasPendingTasks(stepLevelOrder)
                 
@@ -1123,6 +1158,10 @@
                 } else if (stepLevelOrder == this.currentRow.current_step) {
                     return '#E6A23C' // 橙色 - 当前节点
                 } else {
+                    // 对于后续节点，需要检查流程是否已经终止（驳回/退回）
+                    if (this.isWorkflowTerminated()) {
+                        return '#909399' // 灰色 - 流程已终止，后续节点不执行
+                    }
                     return '#909399' // 灰色 - 未开始
                 }
             },
@@ -1174,6 +1213,57 @@
                 })
                 
                 return pendingTasks.length > 0
+            },
+            
+            // 检查指定层级是否已完成（有审批通过的记录）
+            checkStepIsCompleted(levelOrder) {
+                if (!this.currentRow || !this.currentRow.approval_history) return false
+                
+                // 从审批历史中查找该层级的已审批通过的任务
+                const history = this.currentRow.approval_history || []
+                const completedTasks = history.filter(task => {
+                    const taskLevelOrder = task.level_order !== undefined && task.level_order !== null ? task.level_order : task.step_order
+                    // approve_result=1 表示通过，approve_result=2 表示驳回，approve_result=3 表示退回
+                    return taskLevelOrder == levelOrder && task.approve_result === 1
+                })
+                
+                return completedTasks.length > 0
+            },
+            
+            // 检查指定层级是否被驳回或退回
+            checkStepIsRejected(levelOrder) {
+                if (!this.currentRow || !this.currentRow.approval_history) return false
+                
+                // 从审批历史中查找该层级的已驳回或退回的任务
+                const history = this.currentRow.approval_history || []
+                const rejectedTasks = history.filter(task => {
+                    const taskLevelOrder = task.level_order !== undefined && task.level_order !== null ? task.level_order : task.step_order
+                    // approve_result=2 表示驳回，approve_result=3 表示退回
+                    return taskLevelOrder == levelOrder && (task.approve_result === 2 || task.approve_result === 3)
+                })
+                
+                return rejectedTasks.length > 0
+            },
+            // 判断流程是否已终止（驳回或退回）
+            isWorkflowTerminated() {
+                if (!this.currentRow) return false
+                
+                // 如果流程状态是已驳回(3)或已撤回(4)，则流程已终止
+                if (this.currentRow.status === 3 || this.currentRow.status === 4) {
+                    return true
+                }
+                
+                // 检查审批历史中是否有驳回或退回的记录
+                if (this.currentRow.approval_history && this.currentRow.approval_history.length > 0) {
+                    const hasRejectedOrReturned = this.currentRow.approval_history.some(task => 
+                        task.approve_result === 2 || task.approve_result === 3
+                    )
+                    if (hasRejectedOrReturned) {
+                        return true
+                    }
+                }
+                
+                return false
             },
             // 判断是否为完成节点
             isCompleteNode(step) {

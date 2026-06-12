@@ -132,10 +132,18 @@
                     console.log('dept:', item.dept)
                     console.log('dept_belong_id:', item.dept_belong_id)
                     console.log('role:', item.role)
-                    // 编辑时处理字段映射：后端可能返回 dept_belong_id 或 dept
+                    // 编辑时处理字段映射：后端返回的 dept 可能是对象或ID
+                    // 修复：应该使用 item.dept 而不是 item.dept_belong_id
+                    // dept 可能是对象（包含id、name等属性）或ID（字符串/数字），需要提取ID
+                    let deptId = null;
+                    if (item.dept) {
+                        // 如果 dept 是对象，取 id；如果是字符串/数字，直接使用
+                        deptId = typeof item.dept === 'object' ? item.dept.id : item.dept;
+                    }
+                    
                     this.formData = {
                         ...item,
-                        dept: item.dept_belong_id || item.dept || null,
+                        dept: deptId,
                         role: item.role || []
                     }
                 }else{

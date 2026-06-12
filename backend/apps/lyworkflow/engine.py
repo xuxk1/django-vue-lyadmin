@@ -34,22 +34,74 @@ class FlowEngine:
         """启动流程"""
         logger.info(f"启动流程: {self.instance.instance_no}")
         
+        # 先验证流程配置
+        try:
+            first_step = WorkflowStep.objects.get(
+                workflow_type=self.workflow_type,
+                step_order=1
+            )
+            logger.info(f"第一步配置: {first_step.step_name}, 审批人类型: {first_step.approver_type}")
+            
+            # 如果是多级审批，验证配置是否完整
+            if first_step.approver_type == 6:
+                if not first_step.multi_level_config:
+                    raise ValueError(f"多级审批步骤 {first_step.id} 没有配置层级信息")
+                
+                import json
+                config = first_step.multi_level_config
+                if isinstance(config, str):
+                    config = json.loads(config)
+                
+                if not config or len(config) == 0:
+                    raise ValueError(f"多级审批步骤 {first_step.id} 的层级配置为空")
+                
+                logger.info(f"多级审批配置: {len(config)} 个层级")
+                for idx, level in enumerate(config):
+                    approver_type = level.get('approver_type')
+                    if approver_type == 2:  # 指定部门
+                        dept_id = level.get('approver_dept')
+                        if not dept_id:
+                            raise ValueError(f"第{idx+1}级 '{level.get('name')}' 的审批部门未配置")
+        except WorkflowStep.DoesNotExist:
+            logger.error(f"流程 {self.workflow_type.name} 没有配置第一步")
+            raise ValueError(f"流程 {self.workflow_type.name} 没有配置第一步")
+        except Exception as e:
+            logger.error(f"流程配置验证失败: {str(e)}")
+            raise
+        
         with transaction.atomic():
-            # 更新流程状态
-            self.instance.status = 1  # 审批中
-            self.instance.current_step = 1
-            self.instance.save()
-            
-            # 创建第一步的审批任务
-            self._create_tasks_for_step(1)
-            
-            # 通知抄送人员
-            self._notify_cc_users()
-            
-            # 记录日志
-            self._create_log('start', '启动流程')
-            
-        logger.info(f"流程启动成功: {self.instance.instance_no}")
+            try:
+                # 创建第一步的审批任务（先创建任务，再更新状态）
+                self._create_tasks_for_step(1)
+                
+                # 验证任务是否创建成功
+                task_count = WorkflowTask.objects.filter(
+                    instance=self.instance,
+                    status=0
+                ).count()
+                
+                if task_count == 0:
+                    raise ValueError("任务创建失败：没有生成任何待审批任务")
+                
+                logger.info(f"成功创建 {task_count} 个待审批任务")
+                
+                # 更新流程状态
+                self.instance.status = 1  # 审批中
+                self.instance.current_step = 1
+                self.instance.save()
+                
+                # 通知抄送人员
+                self._notify_cc_users()
+                
+                # 记录日志
+                self._create_log('start', '启动流程')
+                
+                logger.info(f"流程启动成功: {self.instance.instance_no}")
+                
+            except Exception as e:
+                logger.error(f"流程启动过程中发生错误: {str(e)}")
+                # 回滚事务，不更新流程状态
+                raise
     
     def approve_task(self, task: WorkflowTask, approve_result: int, comment: str = '', operator: Users = None):
         """
@@ -181,6 +233,8 @@ class FlowEngine:
         
         # 流程直接结束
         instance.status = 3  # 已驳回
+        # 注意：不更新 current_step，保持在当前驳回的节点
+        # 这样前端可以正确显示 "当前步骤" 为驳回所在节点（如 1/2）
         instance.save()
         
         # 取消后续所有待审批任务
@@ -557,6 +611,32 @@ class FlowEngine:
                     self.approve_task(task, 3, '超时自动退回')
                 
                 logger.info(f"任务 {task.id} 超时，已自动处理")
+    
+    def _batch_send_notifications(self, users: list, notification_type: str, level_info: str = ''):
+        """
+        批量发送通知（完全异步，不阻塞主流程）
+        
+        Args:
+            users: 需要通知的用户列表
+            notification_type: 通知类型 ('approve', 'reject', 'return' 等)
+            level_info: 层级信息（用于日志）
+        """
+        if not users:
+            return
+        
+        # 将所有通知任务放入 Celery 队列，完全不阻塞当前响应
+        try:
+            from apps.lyworkflow.tasks import send_workflow_notification
+            
+            for user in users:
+                # 异步发送通知，立即返回，不等待结果
+                send_workflow_notification.delay(user.id, self.instance.id, notification_type)
+                logger.info(f'已将{notification_type}通知加入队列：用户 {user.name} ({level_info})')
+            
+            logger.info(f'共 {len(users)} 个通知任务已加入异步队列')
+        except Exception as e:
+            # 如果 Celery 不可用，记录警告但不阻塞响应
+            logger.warning(f'Celery 队列添加失败（可能是 Celery 服务未启动），通知将在后台重试: {str(e)}')
 
 
 class FlowBuilder:
@@ -585,36 +665,3 @@ class FlowBuilder:
         """构建流程"""
         # 这里可以实现从声明式定义到数据库记录的转换
         pass
-    
-    def _batch_send_notifications(self, users: list, notification_type: str, level_info: str = ''):
-        """
-        批量发送通知（异步优先，失败则同步）
-        
-        Args:
-            users: 需要通知的用户列表
-            notification_type: 通知类型 ('approve', 'reject', 'return' 等)
-            level_info: 层级信息（用于日志）
-        """
-        if not users:
-            return
-        
-        # 先尝试异步发送所有通知
-        async_failed_users = []
-        for user in users:
-            try:
-                from apps.lyworkflow.tasks import send_workflow_notification
-                send_workflow_notification.delay(user.id, self.instance.id, notification_type)
-                logger.info(f'已通过 Celery 异步发送{notification_type}通知给用户 {user.name} ({level_info})')
-            except Exception as e:
-                logger.warning(f'Celery 异步通知失败: {str(e)}')
-                async_failed_users.append(user)
-        
-        # 如果异步失败，则同步创建站内消息
-        if async_failed_users:
-            logger.info(f'有 {len(async_failed_users)} 个用户需要通过同步方式创建通知')
-            for user in async_failed_users:
-                try:
-                    self._create_sync_notification(user, self.instance, notification_type)
-                    logger.info(f'已同步创建站内消息给用户 {user.name} ({level_info})')
-                except Exception as sync_error:
-                    logger.error(f'同步创建站内消息也失败: {str(sync_error)}')

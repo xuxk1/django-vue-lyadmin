@@ -2,6 +2,7 @@
     <div :class="{'ly-is-full':isFull}">
         <!-- 标签页 -->
         <el-tabs v-model="activeTab" @tab-click="handleTabClick" style="margin-bottom: 20px;">
+            <el-tab-pane label="我的待办" name="pending"></el-tab-pane>
             <el-tab-pane label="全部消息" name="all"></el-tab-pane>
             <el-tab-pane label="系统通知" name="1"></el-tab-pane>
             <el-tab-pane label="平台公告" name="2"></el-tab-pane>
@@ -13,20 +14,27 @@
                 <el-form-item label="">
                     <el-button @click="refreshData" icon="Refresh">刷新</el-button>
                 </el-form-item>
-                <el-form-item label="">
+                <el-form-item label="" v-if="activeTab === 'pending'">
+                    <el-button @click="batchApprove" type="primary" icon="Check">批量审批</el-button>
+                </el-form-item>
+                <el-form-item label="" v-if="activeTab !== 'pending'">
                     <el-button @click="markAllAsRead" type="primary" icon="Check">全部已读</el-button>
                 </el-form-item>
             </el-form>
         </div>
 
-        <!-- 消息列表 -->
+        <!-- 消息/任务列表 -->
         <el-table 
             :height="'calc('+(tableHeight)+'px)'" 
             border 
             :data="tableData" 
             ref="tableref" 
             v-loading="loadingPage" 
+            row-key="id"
             style="width: 100%">
+            
+            <el-table-column type="selection" width="55" align="center" v-if="activeTab === 'pending'">
+            </el-table-column>
             
             <el-table-column type="index" width="60" align="center" label="序号">
                 <template #default="scope">
@@ -34,29 +42,56 @@
                 </template>
             </el-table-column>
 
-            <el-table-column min-width="80" label="状态">
-                <template #default="scope">
-                    <el-tag v-if="!scope.row.is_read" type="warning">未读</el-tag>
-                    <el-tag v-else type="success">已读</el-tag>
-                </template>
-            </el-table-column>
+            <!-- 流程待办任务的列 -->
+            <template v-if="activeTab === 'pending'">
+                <el-table-column key="pending-instance-no" min-width="200" prop="instance_no" label="流程编号">
+                    <template #default="scope">
+                        <span>{{ scope.row.instance_no }}</span>
+                    </template>
+                </el-table-column>
+                
+                <el-table-column key="pending-instance-title" min-width="200" prop="instance_title" label="流程标题">
+                    <template #default="scope">
+                        <span>{{ scope.row.instance_title }}</span>
+                    </template>
+                </el-table-column>
+                
+                <el-table-column key="pending-step-name" min-width="150" prop="step_name" label="当前步骤">
+                    <template #default="scope">
+                        <el-tag type="warning">{{ scope.row.step_name }}</el-tag>
+                    </template>
+                </el-table-column>
+                
+                <el-table-column key="pending-create-time" min-width="120" prop="create_datetime" label="到达时间"></el-table-column>
+            </template>
+            
+            <!-- 消息的列 -->
+            <template v-else>
+                <el-table-column key="msg-status" min-width="80" label="状态">
+                    <template #default="scope">
+                        <el-tag v-if="!scope.row.is_read" type="warning">未读</el-tag>
+                        <el-tag v-else type="success">已读</el-tag>
+                    </template>
+                </el-table-column>
 
-            <el-table-column min-width="200" prop="msg_title" label="标题">
-                <template #default="scope">
-                    <span :style="{fontWeight: scope.row.is_read ? 'normal' : 'bold', color: scope.row.is_read ? '#606266' : '#303133'}">
-                        {{ scope.row.msg_title }}
-                    </span>
-                </template>
-            </el-table-column>
+                <el-table-column key="msg-title" min-width="200" prop="msg_title" label="标题">
+                    <template #default="scope">
+                        <span :style="{fontWeight: scope.row.is_read ? 'normal' : 'bold', color: scope.row.is_read ? '#606266' : '#303133'}">
+                            {{ scope.row.msg_title }}
+                        </span>
+                    </template>
+                </el-table-column>
 
-            <el-table-column min-width="300" prop="msg_content" show-overflow-tooltip label="内容">
-                <template #default="scope">
-                    <div v-html="customEllipsis(scope.row.msg_content)" class="ellipsis"></div>
-                </template>
-            </el-table-column>
+                <el-table-column key="msg-content" min-width="300" prop="msg_content" show-overflow-tooltip label="内容">
+                    <template #default="scope">
+                        <div v-html="customEllipsis(scope.row.msg_content)" class="ellipsis"></div>
+                    </template>
+                </el-table-column>
 
-            <el-table-column min-width="150" prop="create_datetime" label="接收时间"></el-table-column>
+                <el-table-column key="msg-create-time" min-width="150" prop="create_datetime" label="接收时间"></el-table-column>
+            </template>
 
+            <!-- 操作列 -->
             <el-table-column label="操作" fixed="right" width="240">
                 <template #header>
                     <div style="display: flex;justify-content: space-between;align-items: center;">
@@ -69,16 +104,34 @@
                     </div>
                 </template>
                 <template #default="scope">
-                    <!-- 如果是审批任务且未审批，显示审批按钮 -->
-                    <span class="table-operate-btn" 
-                          @click="approveTask(scope.row)" 
-                          v-if="scope.row.is_approval_task && !scope.row.is_read"
-                          style="color: #409EFF;">
-                        审批
-                    </span>
-                    <span class="table-operate-btn" @click="viewMessage(scope.row)">查看</span>
-                    <span class="table-operate-btn" @click="markAsRead(scope.row)" v-if="!scope.row.is_read">标记已读</span>
-                    <span class="table-operate-btn" @click="deleteMessage(scope.row)">删除</span>
+                    <!-- 流程待办任务的操作 -->
+                    <template v-if="activeTab === 'pending'">
+                        <span class="table-operate-btn" 
+                              @click="approveTask(scope.row)" 
+                              style="color: #67C23A;">
+                            通过
+                        </span>
+                        <span class="table-operate-btn" 
+                              @click="rejectTask(scope.row)" 
+                              style="color: #F56C6C;">
+                            驳回
+                        </span>
+                        <span class="table-operate-btn" @click="viewWorkflowDetail(scope.row)">详情</span>
+                    </template>
+                    
+                    <!-- 消息的操作 -->
+                    <template v-else>
+                        <!-- 如果是审批任务且未审批，显示审批按钮 -->
+                        <span class="table-operate-btn" 
+                              @click="approveTask(scope.row)" 
+                              v-if="scope.row.is_approval_task && !scope.row.is_read"
+                              style="color: #409EFF;">
+                            审批
+                        </span>
+                        <span class="table-operate-btn" @click="viewMessage(scope.row)">查看</span>
+                        <span class="table-operate-btn" @click="markAsRead(scope.row)" v-if="!scope.row.is_read">标记已读</span>
+                        <span class="table-operate-btn" @click="deleteMessage(scope.row)">删除</span>
+                    </template>
                 </template>
             </el-table-column>
         </el-table>
@@ -114,7 +167,7 @@
 <script>
 import Pagination from "@/components/Pagination";
 import { getTableHeight } from "@/utils/util";
-import { getUserMessages, updateUserMessageStatus, workflowTaskApprove, workflowTaskReject } from '@/api/api';
+import { getUserMessages, updateUserMessageStatus, workflowTaskApprove, workflowTaskReject, getMyPendingTasks } from '@/api/api';
 
 export default {
     components: {
@@ -126,11 +179,12 @@ export default {
             isFull: false,
             tableHeight: 500,
             loadingPage: false,
-            activeTab: 'all', // 当前激活的标签页：all=全部，1=系统通知，2=平台公告
+            activeTab: 'pending', // 当前激活的标签页：pending=我的待办，all=全部，1=系统通知，2=平台公告
             formInline: {
                 page: 1,
                 limit: 10,
-                type: null // null=全部，1=系统通知，2=平台公告
+                type: null, // null=全部，1=系统通知，2=平台公告
+                status: 0 // 待办任务状态：0=待审批
             },
             pageparm: {
                 page: 1,
@@ -139,7 +193,8 @@ export default {
             },
             tableData: [],
             viewDialogVisible: false,
-            currentMessage: null
+            currentMessage: null,
+            selectedTasks: [] // 选中的待办任务
         }
     },
     methods: {
@@ -155,8 +210,10 @@ export default {
         
         // 当渲染的文字超出10字后显示省略号
         customEllipsis(value) {
-            value = value.replace(/<.*?>/ig, "") // 把v-html的格式标签替换掉
             if (!value) return ""
+            // 确保 value 是字符串
+            value = String(value)
+            value = value.replace(/<.*?>/ig, "") // 把v-html的格式标签替换掉
             if (value.length > 10) {
                 return value.slice(0, 10) + "..."
             }
@@ -166,7 +223,15 @@ export default {
         // 标签页切换
         handleTabClick(tab) {
             this.activeTab = tab.paneName
-            this.formInline.type = tab.paneName === 'all' ? null : tab.paneName
+            // 先清空表格数据，避免旧数据残留导致错位
+            this.tableData = []
+            if (tab.paneName === 'pending') {
+                // 我的待办
+                this.formInline.status = 0
+            } else {
+                // 消息中心
+                this.formInline.type = tab.paneName === 'all' ? null : tab.paneName
+            }
             this.formInline.page = 1
             this.getData()
         },
@@ -268,33 +333,165 @@ export default {
         // 审批任务（通过）
         approveTask(row) {
             let vm = this
-            if (!row.task_id) {
+            
+            // 如果是流程待办任务
+            if (this.activeTab === 'pending') {
+                const taskId = row.id
+                if (!taskId) {
+                    vm.$message.warning('无法找到对应的审批任务')
+                    return
+                }
+                
+                vm.$prompt('请输入审批意见（可选）', '审批通过', {
+                    confirmButtonText: '确定',
+                    cancelButtonText: '取消',
+                    inputPlaceholder: '请输入审批意见',
+                    closeOnClickModal: false
+                }).then(({ value }) => {
+                    const data = {
+                        approve_result: 1,  // 1=通过
+                        approve_comment: value || ''
+                    }
+                    
+                    workflowTaskApprove(taskId, data).then(res => {
+                        if (res.code === 2000) {
+                            vm.$message.success('审批通过')
+                            // 刷新列表
+                            vm.getData()
+                        } else {
+                            vm.$message.error(res.msg || '审批失败')
+                        }
+                    }).catch(err => {
+                        vm.$message.error('审批失败')
+                    })
+                }).catch(() => {})
+            } else {
+                // 如果是消息中的审批任务
+                if (!row.task_id) {
+                    vm.$message.warning('无法找到对应的审批任务')
+                    return
+                }
+                
+                vm.$prompt('请输入审批意见（可选）', '审批通过', {
+                    confirmButtonText: '确定',
+                    cancelButtonText: '取消',
+                    inputPlaceholder: '请输入审批意见',
+                    closeOnClickModal: false
+                }).then(({ value }) => {
+                    const data = {
+                        approve_result: 1,  // 1=通过
+                        approve_comment: value || ''
+                    }
+                    
+                    workflowTaskApprove(row.task_id, data).then(res => {
+                        if (res.code === 2000) {
+                            vm.$message.success('审批通过')
+                            // 标记消息为已读
+                            vm.markAsRead(row, false)
+                            // 刷新列表
+                            vm.getData()
+                        } else {
+                            vm.$message.error(res.msg || '审批失败')
+                        }
+                    }).catch(err => {
+                        vm.$message.error('审批失败')
+                    })
+                }).catch(() => {})
+            }
+        },
+        
+        // 驳回任务
+        rejectTask(row) {
+            let vm = this
+            const taskId = row.id
+            if (!taskId) {
                 vm.$message.warning('无法找到对应的审批任务')
                 return
             }
             
-            vm.$prompt('请输入审批意见（可选）', '审批通过', {
+            vm.$prompt('请输入驳回原因', '驳回流程', {
+                confirmButtonText: '确定',
+                cancelButtonText: '取消',
+                inputPlaceholder: '请输入驳回原因',
+                inputValidator: (value) => {
+                    if (!value || value.trim() === '') {
+                        return '驳回原因不能为空'
+                    }
+                    return true
+                },
+                closeOnClickModal: false
+            }).then(({ value }) => {
+                const data = {
+                    approve_result: 2,  // 2=驳回
+                    approve_comment: value
+                }
+                
+                workflowTaskReject(taskId, data).then(res => {
+                    if (res.code === 2000) {
+                        vm.$message.success('已驳回')
+                        // 刷新列表
+                        vm.getData()
+                    } else {
+                        vm.$message.error(res.msg || '驳回失败')
+                    }
+                }).catch(err => {
+                    vm.$message.error('驳回失败')
+                })
+            }).catch(() => {})
+        },
+        
+        // 查看流程详情
+        viewWorkflowDetail(row) {
+            let vm = this
+            // 打开流程列表页并跳转到该流程详情
+            const routeData = vm.$router.resolve({ path: '/workflowList' })
+            window.open(routeData.href, '_blank')
+        },
+        
+        // 批量审批
+        batchApprove() {
+            let vm = this
+            const selectedRows = vm.$refs.tableref.getSelectionRows()
+            
+            if (selectedRows.length === 0) {
+                vm.$message.warning('请先选择要审批的任务')
+                return
+            }
+            
+            vm.$prompt('请输入审批意见（可选）', `批量审批通过 (${selectedRows.length}项)`, {
                 confirmButtonText: '确定',
                 cancelButtonText: '取消',
                 inputPlaceholder: '请输入审批意见',
                 closeOnClickModal: false
             }).then(({ value }) => {
                 const data = {
-                    remark: value || ''
+                    approve_result: 1,  // 1=通过
+                    approve_comment: value || ''
                 }
                 
-                workflowTaskApprove(row.task_id, data).then(res => {
-                    if (res.code === 2000) {
-                        vm.$message.success('审批通过')
-                        // 标记消息为已读
-                        vm.markAsRead(row, false)
-                        // 刷新列表
-                        vm.getData()
-                    } else {
-                        vm.$message.error(res.msg || '审批失败')
-                    }
-                }).catch(err => {
-                    vm.$message.error('审批失败')
+                // 逐个审批
+                let successCount = 0
+                let failCount = 0
+                let promises = selectedRows.map(row => {
+                    return workflowTaskApprove(row.id, data)
+                        .then(res => {
+                            if (res.code === 2000) {
+                                successCount++
+                            } else {
+                                failCount++
+                            }
+                        })
+                        .catch(() => {
+                            failCount++
+                        })
+                })
+                
+                Promise.all(promises).then(() => {
+                    vm.$message.success(`成功审批 ${successCount} 项，失败 ${failCount} 项`)
+                    // 清空选择
+                    vm.$refs.tableref.clearSelection()
+                    // 刷新列表
+                    vm.getData()
                 })
             }).catch(() => {})
         },
@@ -308,18 +505,36 @@ export default {
         // 获取列表
         async getData() {
             this.loadingPage = true
-            getUserMessages(this.formInline).then(res => {
-                this.loadingPage = false
-                if (res.code === 2000) {
-                    this.tableData = res.data.data
-                    this.pageparm.page = res.data.page
-                    this.pageparm.limit = res.data.limit
-                    this.pageparm.total = res.data.total
-                }
-            }).catch(err => {
-                this.loadingPage = false
-                this.$message.error('获取消息列表失败')
-            })
+            
+            if (this.activeTab === 'pending') {
+                // 获取我的待办任务
+                getMyPendingTasks(this.formInline).then(res => {
+                    this.loadingPage = false
+                    if (res.code === 2000) {
+                        this.tableData = res.data.data || []
+                        this.pageparm.page = res.data.page
+                        this.pageparm.limit = res.data.limit
+                        this.pageparm.total = res.data.total
+                    }
+                }).catch(err => {
+                    this.loadingPage = false
+                    this.$message.error('获取待办任务列表失败')
+                })
+            } else {
+                // 获取消息列表
+                getUserMessages(this.formInline).then(res => {
+                    this.loadingPage = false
+                    if (res.code === 2000) {
+                        this.tableData = res.data.data || []
+                        this.pageparm.page = res.data.page
+                        this.pageparm.limit = res.data.limit
+                        this.pageparm.total = res.data.total
+                    }
+                }).catch(err => {
+                    this.loadingPage = false
+                    this.$message.error('获取消息列表失败')
+                })
+            }
         },
         
         // 计算搜索栏的高度

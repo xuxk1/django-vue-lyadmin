@@ -448,6 +448,8 @@ export const workflowTaskApprove= (id, data) => ajaxPost({url: `workflow/workflo
 export const workflowTaskReject= (id, data) => ajaxPost({url: `workflow/workflow-task/${id}/reject/`,params: data})
 // 审批任务 退回
 export const workflowTaskReturn= (id, data) => ajaxPost({url: `workflow/workflow-task/${id}/return_back/`,params: data})
+// 获取我的待办任务列表
+export const getMyPendingTasks = params => ajaxGet({url: `workflow/workflow-task/`,params})
 
 // 流程日志列表
 export const workflowLog= params => ajaxGet({url: `workflow/workflow-log/`,params})

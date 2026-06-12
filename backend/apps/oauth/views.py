@@ -659,7 +659,7 @@ class WeChatGZHH5LoginAPIView(APIView):
     https://open.weixin.qq.com/connect/oauth2/authorize?appid=wx9747c4bf89d5ce34&redirect_uri=http%3A%2F%2Fdvlyadmin.lybbn.cn%2Fapi%2Fxcx%2Fwxh5login%2F&response_type=code&scope=snsapi_userinfo&state=STATE#wechat_redirect
     也可以使用拼接
     redirect_uri = parse.quote("%s/api/h5/wxh5login/"%config.DOMAIN_HOST)
-    #snsapi_base\snsapi_userinfo
+    #snsapi_base / snsapi_userinfo
     link = "https://open.weixin.qq.com/connect/oauth2/authorize?appid=%s&redirect_uri=%s&response_type=code&scope=snsapi_userinfo&state=%s#wechat_redirect"%(WX_GZH_APPID,redirect_uri,code)
     """
     permission_classes = []

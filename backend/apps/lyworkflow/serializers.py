@@ -174,6 +174,10 @@ class WorkflowTaskSerializer(CustomModelSerializer):
     approver_name = serializers.CharField(source='approver.name', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     approve_result_display = serializers.CharField(source='get_approve_result_display', read_only=True)
+    
+    # 添加步骤配置信息（用于前端判断是否显示退回/驳回按钮）
+    allow_return = serializers.BooleanField(source='step.allow_return', read_only=True)
+    allow_reject = serializers.BooleanField(source='step.allow_reject', read_only=True)
 
     class Meta:
         model = WorkflowTask
@@ -181,6 +185,7 @@ class WorkflowTaskSerializer(CustomModelSerializer):
                   'step_order', 'level_order', 'approver', 'approver_name',
                   'status', 'status_display', 'approve_result', 'approve_result_display',
                   'approve_comment', 'approve_time', 'is_cc',
+                  'allow_return', 'allow_reject',
                   'create_datetime', 'update_datetime']
         read_only_fields = ['id', 'create_datetime', 'update_datetime']
 
@@ -386,7 +391,8 @@ class WorkflowInstanceCreateSerializer(CustomModelSerializer):
 
 class WorkflowApproveSerializer(CustomModelSerializer):
     """审批操作序列化器"""
-    approve_result = serializers.IntegerField(write_only=True)
+    # approve_result 由后端视图集根据 URL 路径确定，前端可以不传
+    approve_result = serializers.IntegerField(write_only=True, required=False)
     approve_comment = serializers.CharField(write_only=True, allow_blank=True, required=False)
 
     class Meta:
@@ -395,14 +401,10 @@ class WorkflowApproveSerializer(CustomModelSerializer):
     
     def validate(self, attrs):
         """验证审批数据"""
-        approve_result = attrs.get('approve_result')
+        # approve_result 由后端视图集提供，这里只验证 approve_comment
         approve_comment = attrs.get('approve_comment', '').strip()
         
-        # 驳回(2)和退回(3)时必须填写审批意见
-        if approve_result in [2, 3]:
-            if not approve_comment:
-                raise serializers.ValidationError({
-                    'approve_comment': '选择驳回或退回时，审批意见为必填项'
-                })
+        # 注意：驳回(2)和退回(3)时的验证在后端视图集中进行
+        # 因为 approve_result 不在 attrs 中
         
         return attrs

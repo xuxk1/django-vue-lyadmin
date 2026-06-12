@@ -199,15 +199,23 @@ class UserMessagesView(APIView):
         # # 2. 使用自己配置的分页器调用分页方法进行分页
         page_data = page_obj.paginate_queryset(queryset, request)
         data = []
-        if queryset:
+        if page_data:
             for q in page_data:
+                # 检查关联的消息是否存在
+                if not q.messageid:
+                    continue
+                    
                 data.append({
                     'id': q.id,
-                    'msg_title': q.messageid.msg_title,
-                    'msg_content': q.messageid.msg_content,
-                    'is_read':q.is_read,
-                    'create_datetime': formatdatetime(q.create_datetime),
-                    'update_datetime': formatdatetime(q.update_datetime),
+                    'msg_title': q.messageid.msg_title or '',
+                    'msg_content': q.messageid.msg_content or '',
+                    'is_read': q.is_read,
+                    'is_approval_task': False,  # 默认为False，表示不是审批任务
+                    'task_id': None,  # 默认为None
+                    # 修复：使用消息本身的创建时间，而不是用户消息关联记录的创建时间
+                    # 这样即使第一次登录查看历史消息，也能显示正确的接收时间
+                    'create_datetime': formatdatetime(q.messageid.create_datetime) if q.messageid.create_datetime else '',
+                    'update_datetime': formatdatetime(q.update_datetime) if q.update_datetime else '',
                 })
         return page_obj.get_paginated_response(data)
 

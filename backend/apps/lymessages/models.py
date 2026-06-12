@@ -52,3 +52,5 @@ class MyMessageUser(BaseModel):
         db_table = 'tb_message_user'
         verbose_name = '用户消息'
         verbose_name_plural = verbose_name
+        # 添加唯一约束，防止重复消息（用户 + 消息标题 + 未删除）
+        unique_together = ('revuserid', 'messageid')
