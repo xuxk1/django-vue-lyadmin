@@ -46,9 +46,9 @@ SSH_REMOTE_SCRIPT_PATH= '/users/G02/sqa/xxk/lmcrypt_new'
 # ************** 邮件 配置  ************** #
 # ================================================= #
 
-MAIL_SMTP_SERVER = "mail.phlexing.com"
+MAIL_SMTP_SERVER = "mail.xingphle.com"
 MAIL_PORT = 25
-MAIL_USER = "systemmail@phlexing.com"
+MAIL_USER = "systemmail@xingphle.com"
 MAIL_PASSWORD = "YueMing#560"
 MAIL_RECIPIENT = "lijiadong"
 MAIL_CC = "xuxiaokui"
