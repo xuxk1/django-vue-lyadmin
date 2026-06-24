@@ -196,3 +196,10 @@ ALIPAY_APPID = 'xxxxxxxxxxxxxxxxxx'
 # 服务器存放证书路径（支付宝支付签发的）
 ALIPAY_PRIVATE_KEY_PATH = os.path.join(BASE_DIR, 'key', 'app_private_key.pem')
 ALIPAY_PUBLIC_KEY_PATH = os.path.join(BASE_DIR, 'key', 'alipay_public_key.pem')
+
+# ================================================= #
+# ************** Bitanswer License 配置  ************** #
+# ================================================= #
+
+BITANSWER_API_BASE_URL = 'http://172.16.30.24:80'  # Bitanswer API基础地址
+BITANSWER_BITKEY = 'your-bitkey-here'  # Bitanswer API的bitkey，固定值

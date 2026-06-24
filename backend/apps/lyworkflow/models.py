@@ -212,7 +212,7 @@ class WorkflowTask(CoreModel):
     instance = models.ForeignKey(WorkflowInstance, on_delete=models.CASCADE, verbose_name="流程实例", related_name='tasks')
     step = models.ForeignKey(WorkflowStep, on_delete=models.CASCADE, verbose_name="流程步骤")
     step_order = models.IntegerField(verbose_name="步骤顺序")  # 整数，表示原始步骤顺序
-    level_order = models.FloatField(default=0.0, verbose_name="层级顺序", help_text="多级审批时使用，如 1.0, 1.1, 1.2；普通步骤为 0.0")
+    level_order = models.IntegerField(default=0, verbose_name="层级顺序", help_text="多级审批时使用，如 1, 2, 3；普通步骤为 0")
 
     approver = models.ForeignKey('mysystem.Users', on_delete=models.CASCADE, verbose_name="审批人", related_name='workflow_tasks')
 

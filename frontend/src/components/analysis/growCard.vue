@@ -21,7 +21,7 @@
                                     </div>
                                 </div>
                                 <div class="space-main-down">
-                                    <span style="font-size: 14px;margin-left: 5px">{{ "总"+item.title }}</span>
+                                    <span style="font-size: 14px;margin-left: 5px">{{ item.subtitle || ("总"+item.title) }}</span>
                                     <div>{{ item.totalnums }}</div>
                                 </div>
                             </div>

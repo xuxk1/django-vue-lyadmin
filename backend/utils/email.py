@@ -537,20 +537,36 @@ class LicenseGeneratedMessage(EmailMessage):
         # 构建特性列表
         feature_list = ''
         if self.application.feature and isinstance(self.application.feature, list):
-            for feat in self.application.feature:
-                quantity = ''
-                if self.application.quantity and isinstance(self.application.quantity, dict):
-                    # 先尝试直接从 quantity 中查找（扁平结构）
-                    quantity = self.application.quantity.get(feat, '')
-                    # 如果没找到，尝试在嵌套结构中查找（GloryEX 组的情况）
-                    if not quantity:
-                        for product_key, product_quantity in self.application.quantity.items():
-                            if isinstance(product_quantity, dict):
-                                quantity = product_quantity.get(feat, '')
-                                if quantity:
-                                    break
-                    quantity = str(quantity) if quantity else ''
-                feature_list += f"<li>{feat} (授权数量: {quantity})</li>"
+            # 判断是否为产品组（GloryEX 或 GloryBolt）
+            is_gloryex_group = self.application.product == 'GloryEX'
+            is_glorybolt_group = self.application.product == 'GloryBolt'
+            
+            if (is_gloryex_group or is_glorybolt_group) and self.application.quantity and isinstance(self.application.quantity, dict):
+                # 产品组：按产品分组显示
+                for product_name, product_quantity in self.application.quantity.items():
+                    if isinstance(product_quantity, dict) and product_quantity:
+                        # 为每个子产品创建一个分组标题
+                        feature_list += f"<li style='margin-top: 10px;'><strong>{product_name}:</strong></li>"
+                        # 显示该子产品的所有 feature
+                        for feat, qty in product_quantity.items():
+                            quantity_str = str(qty) if qty else ''
+                            feature_list += f"<li style='margin-left: 20px;'>{feat} (授权数量: {quantity_str})</li>"
+            else:
+                # 非产品组：扁平显示
+                for feat in self.application.feature:
+                    quantity = ''
+                    if self.application.quantity and isinstance(self.application.quantity, dict):
+                        # 先尝试直接从 quantity 中查找（扁平结构）
+                        quantity = self.application.quantity.get(feat, '')
+                        # 如果没找到，尝试在嵌套结构中查找（产品组的情况）
+                        if not quantity:
+                            for product_key, product_quantity in self.application.quantity.items():
+                                if isinstance(product_quantity, dict):
+                                    quantity = product_quantity.get(feat, '')
+                                    if quantity:
+                                        break
+                        quantity = str(quantity) if quantity else ''
+                    feature_list += f"<li>{feat} (授权数量: {quantity})</li>"
         
         html = f"""
         <html>
@@ -708,20 +724,35 @@ class LicenseGeneratedMessage(EmailMessage):
         # 构建特性列表
         feature_list = ''
         if self.application.feature and isinstance(self.application.feature, list):
-            for feat in self.application.feature:
-                quantity = ''
-                if self.application.quantity and isinstance(self.application.quantity, dict):
-                    # 先尝试直接从 quantity 中查找（扁平结构）
-                    quantity = self.application.quantity.get(feat, '')
-                    # 如果没找到，尝试在嵌套结构中查找（GloryEX 组的情况）
-                    if not quantity:
-                        for product_key, product_quantity in self.application.quantity.items():
-                            if isinstance(product_quantity, dict):
-                                quantity = product_quantity.get(feat, '')
-                                if quantity:
-                                    break
-                    quantity = str(quantity) if quantity else ''
-                feature_list += f"  - {feat} (授权数量: {quantity})\n"
+            # 判断是否为 GloryEX 组产品
+            is_gloryex_group = self.application.product == 'GloryEX'
+            
+            if is_gloryex_group and self.application.quantity and isinstance(self.application.quantity, dict):
+                # GloryEX 组产品：按产品分组显示
+                for product_name, product_quantity in self.application.quantity.items():
+                    if isinstance(product_quantity, dict) and product_quantity:
+                        # 为每个子产品创建一个分组标题
+                        feature_list += f"\n  {product_name}:\n"
+                        # 显示该子产品的所有 feature
+                        for feat, qty in product_quantity.items():
+                            quantity_str = str(qty) if qty else ''
+                            feature_list += f"    - {feat} (授权数量: {quantity_str})\n"
+            else:
+                # 非 GloryEX 组产品：扁平显示
+                for feat in self.application.feature:
+                    quantity = ''
+                    if self.application.quantity and isinstance(self.application.quantity, dict):
+                        # 先尝试直接从 quantity 中查找（扁平结构）
+                        quantity = self.application.quantity.get(feat, '')
+                        # 如果没找到，尝试在嵌套结构中查找（GloryEX 组的情况）
+                        if not quantity:
+                            for product_key, product_quantity in self.application.quantity.items():
+                                if isinstance(product_quantity, dict):
+                                    quantity = product_quantity.get(feat, '')
+                                    if quantity:
+                                        break
+                        quantity = str(quantity) if quantity else ''
+                    feature_list += f"  - {feat} (授权数量: {quantity})\n"
         
         text = f"""
 License 文件制作成功

@@ -43,8 +43,8 @@
             return;
         }
         
-        // 取前15个Feature
-        const topFeatures = props.data && props.data.length > 0 ? props.data.slice(0, 15) : [];
+        // 取前30个Feature
+        const topFeatures = props.data && props.data.length > 0 ? props.data.slice(0, 30) : [];
         
         // 先调用 resize 确保容器尺寸正确
         myChart.resize();
@@ -53,7 +53,7 @@
             // 显示空数据提示
             const option = {
                 title: {
-                    text: 'Feature 申请分布 TOP 15',
+                    text: 'Feature 申请分布 TOP 30',
                     left: 'center',
                     textStyle: {
                         fontSize: 16,
@@ -77,7 +77,7 @@
         
         const option = {
             title: {
-                text: 'Feature 申请分布 TOP 15',
+                text: 'Feature 申请分布 TOP 30',
                 left: 'center',
                 textStyle: {
                     fontSize: 16,

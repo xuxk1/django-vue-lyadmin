@@ -94,7 +94,7 @@ class LicenseRecord(BaseModel):
     full_path = models.CharField(max_length=500, verbose_name="完整路径")
     
     # License详细信息
-    feature = models.CharField(max_length=500, verbose_name="Feature")
+    feature = models.CharField(max_length=5000, verbose_name="Feature")
     vendor = models.CharField(max_length=200, null=True, blank=True, verbose_name="Vendor")
     version = models.CharField(max_length=50, null=True, blank=True, verbose_name="Version")
     host_id = models.CharField(max_length=100, verbose_name="HostID")

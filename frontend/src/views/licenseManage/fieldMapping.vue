@@ -53,6 +53,12 @@
                 <el-table-column min-width="150" prop="field" label="原始字段名" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="200" prop="name" label="字段含义" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="150" prop="real_key" label="映射后的真实key" show-overflow-tooltip></el-table-column>
+                <el-table-column min-width="130" prop="third_party_feature_id" label="第三方FeatureID" show-overflow-tooltip>
+                    <template #default="scope">
+                        <el-tag v-if="scope.row.third_party_feature_id" type="warning" size="small">{{ scope.row.third_party_feature_id }}</el-tag>
+                        <span v-else style="color: #909399;">-</span>
+                    </template>
+                </el-table-column>
                 <el-table-column min-width="150" prop="remark" label="备注" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="100" prop="creator_name" label="创建人" show-overflow-tooltip></el-table-column>
                 <el-table-column min-width="100" label="状态" align="center">

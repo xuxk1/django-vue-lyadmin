@@ -78,6 +78,7 @@ class LicenseRecordSerializer(CustomModelSerializer):
     status_display = serializers.SerializerMethodField(read_only=True)
     applicant = serializers.SerializerMethodField(read_only=True)
     customer_name = serializers.SerializerMethodField(read_only=True)
+    remaining_days = serializers.SerializerMethodField(read_only=True)
     
     def get_license_type_display(self, obj):
         return obj.get_license_type_display()
@@ -96,6 +97,18 @@ class LicenseRecordSerializer(CustomModelSerializer):
         if obj.application:
             return obj.application.customer_name
         return ''
+    
+    def get_remaining_days(self, obj):
+        """动态计算剩余天数（基于当前日期）"""
+        from datetime import date
+        
+        if not obj.end_time:
+            return 0
+        
+        # 使用当前日期计算剩余天数
+        now = date.today()
+        delta = obj.end_time - now
+        return max(0, delta.days)
     
     class Meta:
         model = LicenseRecord

@@ -39,6 +39,8 @@ class WorkflowStepSerializer(CustomModelSerializer):
     next_step_on_reject_name = serializers.CharField(source='next_step_on_reject.step_name', read_only=True)
     # 新增：审批人显示文本（用于列表展示）
     approvers_display = serializers.SerializerMethodField(read_only=True)
+    # 新增：level_order 字段，用于多级审批和普通步骤的统一处理
+    level_order = serializers.SerializerMethodField(read_only=True)
 
     def get_approver_users_info(self, obj):
         """获取审批人员信息"""
@@ -120,10 +122,16 @@ class WorkflowStepSerializer(CustomModelSerializer):
             return '申请人自选'
         else:
             return '未配置'
+    
+    def get_level_order(self, obj):
+        """获取 level_order：对于普通步骤，level_order = step_order；对于多级审批子步骤，在 get_steps_info 中单独设置"""
+        # 这里只处理普通步骤的情况
+        # 多级审批的子步骤会在 WorkflowInstanceSerializer.get_steps_info 中单独设置
+        return float(obj.step_order)
 
     class Meta:
         model = WorkflowStep
-        fields = ['id', 'workflow_type', 'workflow_type_name', 'step_name', 'step_order',
+        fields = ['id', 'workflow_type', 'workflow_type_name', 'step_name', 'step_order', 'level_order',
                   'node_type', 'node_type_display',
                   'approval_mode', 'approval_mode_display',
                   'approver_type', 'approver_type_display', 'approver_role', 'approver_role_name',
@@ -170,7 +178,7 @@ class WorkflowTaskSerializer(CustomModelSerializer):
     """审批任务序列化器"""
     instance_no = serializers.CharField(source='instance.instance_no', read_only=True)
     instance_title = serializers.CharField(source='instance.title', read_only=True)
-    step_name = serializers.CharField(source='step.step_name', read_only=True)
+    step_name = serializers.SerializerMethodField(read_only=True)  # 修改为动态计算
     approver_name = serializers.CharField(source='approver.name', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     approve_result_display = serializers.CharField(source='get_approve_result_display', read_only=True)
@@ -178,6 +186,40 @@ class WorkflowTaskSerializer(CustomModelSerializer):
     # 添加步骤配置信息（用于前端判断是否显示退回/驳回按钮）
     allow_return = serializers.BooleanField(source='step.allow_return', read_only=True)
     allow_reject = serializers.BooleanField(source='step.allow_reject', read_only=True)
+    
+    # 添加唯一节点标识（用于区分同一审批人在不同层级的任务）
+    node_key = serializers.SerializerMethodField(read_only=True)
+    
+    def get_node_key(self, obj):
+        """生成唯一节点标识：step_order-level_order-approver_id"""
+        if not obj.step or not obj.approver:
+            return ''
+        return f"{obj.step.step_order}-{obj.level_order}-{obj.approver.id}"
+    
+    def get_step_name(self, obj):
+        """获取步骤名称（多级审批时返回层级名称）"""
+        if not obj.step:
+            return ''
+        
+        # 如果是多级审批，返回层级名称
+        if obj.step.approver_type == 6 and obj.step.multi_level_config:
+            import json
+            config = obj.step.multi_level_config
+            if isinstance(config, str):
+                config = json.loads(config)
+            
+            # 计算当前是第几个层级（idx从0开始）
+            base_step_order = obj.step.step_order
+            idx = obj.level_order - base_step_order
+            
+            # 获取对应层级的名称
+            if 0 <= idx < len(config):
+                level_name = config[idx].get('name', '')
+                if level_name:
+                    return level_name
+        
+        # 普通步骤或找不到层级名称时，返回步骤名称
+        return obj.step.step_name
 
     class Meta:
         model = WorkflowTask
@@ -185,7 +227,7 @@ class WorkflowTaskSerializer(CustomModelSerializer):
                   'step_order', 'level_order', 'approver', 'approver_name',
                   'status', 'status_display', 'approve_result', 'approve_result_display',
                   'approve_comment', 'approve_time', 'is_cc',
-                  'allow_return', 'allow_reject',
+                  'allow_return', 'allow_reject', 'node_key',
                   'create_datetime', 'update_datetime']
         read_only_fields = ['id', 'create_datetime', 'update_datetime']
 
@@ -221,9 +263,22 @@ class WorkflowInstanceSerializer(CustomModelSerializer):
         """获取当前用户的待审批任务"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            task = obj.tasks.filter(approver=request.user, status=0).first()
-            if task:
-                return WorkflowTaskSerializer(task).data
+            # 如果是超级管理员，检查该流程是否有任何待审批任务
+            if request.user.is_superuser:
+                # 排除申请人自己的任务，只返回其他审批人的待审批任务
+                task = obj.tasks.filter(
+                    status=0,
+                    approver__isnull=False
+                ).exclude(
+                    approver=obj.applicant  # 排除申请人自己的任务
+                ).first()
+                if task:
+                    return WorkflowTaskSerializer(task).data
+            else:
+                # 普通用户只能看到分配给自己的任务
+                task = obj.tasks.filter(approver=request.user, status=0).first()
+                if task:
+                    return WorkflowTaskSerializer(task).data
         return None
 
     def get_steps_info(self, obj):
@@ -231,9 +286,16 @@ class WorkflowInstanceSerializer(CustomModelSerializer):
         steps = obj.workflow_type.steps.all()
         expanded_steps = []
         
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f'get_steps_info - 流程实例: {obj.instance_no}, 步骤数量: {steps.count()}')
+        
         for step in steps:
+            logger.info(f'get_steps_info - 步骤: step_order={step.step_order}, approver_type={step.approver_type}, step_name={step.step_name}')
+            
             # 如果是多级审批（approver_type=6），需要展开为多个子层级
             if step.approver_type == 6 and step.multi_level_config:
+                logger.info(f'get_steps_info - 多级审批步骤，子层级数量: {len(step.multi_level_config)}')
                 # 遍历多级配置，创建虚拟的子步骤
                 for idx, level in enumerate(step.multi_level_config):
                     # 创建虚拟步骤对象
@@ -243,7 +305,7 @@ class WorkflowInstanceSerializer(CustomModelSerializer):
                         'workflow_type_name': step.workflow_type.name,
                         'step_name': level.get('name', f'{step.step_name}-第{idx+1}级'),
                         'step_order': step.step_order,  # 整数，表示原始步骤顺序
-                        'level_order': step.step_order + (idx * 0.1),  # 浮点数，表示层级顺序
+                        'level_order': step.step_order + idx,  # 整数，表示层级顺序（如 2, 3, 4）
                         'node_type': step.node_type,
                         'node_type_display': step.get_node_type_display(),
                         'approval_mode': step.approval_mode,
@@ -281,10 +343,14 @@ class WorkflowInstanceSerializer(CustomModelSerializer):
                         'parent_step_name': step.step_name,  # 父步骤名称
                     }
                     expanded_steps.append(virtual_step)
+                    logger.info(f'get_steps_info - 子层级 {idx}: level_order={virtual_step["level_order"]}, step_name={virtual_step["step_name"]}')
             else:
                 # 普通步骤，直接序列化
-                expanded_steps.append(WorkflowStepSerializer(step).data)
+                step_data = WorkflowStepSerializer(step).data
+                expanded_steps.append(step_data)
+                logger.info(f'get_steps_info - 普通步骤: level_order={step_data.get("level_order")}, step_name={step_data.get("step_name")}')
         
+        logger.info(f'get_steps_info - 最终展开的步骤数量: {len(expanded_steps)}')
         return expanded_steps
     
     def _get_approver_type_display(self, approver_type):
@@ -333,8 +399,10 @@ class WorkflowInstanceSerializer(CustomModelSerializer):
             return []
 
     def get_approval_history(self, obj):
-        """获取审批历史"""
-        tasks = obj.tasks.exclude(status=0).order_by('step_order', 'level_order', 'approve_time')
+        """获取审批历史（包括所有任务，用于前端判断层级状态）"""
+        # 返回所有任务，按 level_order 和创建时间排序
+        # 注意：这里返回所有任务是为了让前端能够判断每个层级的状态
+        tasks = obj.tasks.all().order_by('level_order', 'create_datetime')
         return WorkflowTaskSerializer(tasks, many=True).data
 
     class Meta:

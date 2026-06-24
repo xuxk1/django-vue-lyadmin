@@ -42,28 +42,28 @@
             return{
                 showloading:true,
                 growData:[
-                    {id:1,title:"产品数",nums:0,totalnums:0,icon:{
+                    {id:1,title:"产品数",nums:0,totalnums:0,subtitle:"总产品数（含重复）",icon:{
                             type:"GoodsFilled",
                             background:"#67c23a",
                         },
                         time:{
-                            name:"总计",
+                            name:"去重后数量",
                             type:"success"
                         }},
-                    {id:2,title:"申请Feature数",nums:0,totalnums:0,icon:{
+                    {id:2,title:"申请Feature数",nums:0,totalnums:0,subtitle:"总申请Feature数（含重复）",icon:{
                             type:"Menu",
                             background:"#e6a23c",
                         },
                         time:{
-                            name:"总计",
+                            name:"去重后数量",
                             type:"warning"
                         }},
-                    {id:3,title:"客户数",nums:0,totalnums:0,icon:{
+                    {id:3,title:"客户数",nums:0,totalnums:0,subtitle:"总产客户数（含重复）",icon:{
                             type:"User",
                             background:"#409eff",
                         },
                         time:{
-                            name:"总计",
+                            name:"去重后数量",
                             type:"info"
                         }},
                     {id:4,title:"申请人数",nums:0,totalnums:0,icon:{
@@ -126,8 +126,9 @@
                         this.growData[0].nums = this.productStats.length
                         this.growData[0].totalnums = this.productStats.reduce((sum, item) => sum + item.count, 0)
                         
-                        this.growData[1].nums = this.featureStats.length
-                        this.growData[1].totalnums = this.featureStats.reduce((sum, item) => sum + item.count, 0)
+                        // Feature 统计：显示去重后的种类数和总数
+                        this.growData[1].nums = data.unique_feature_count || this.featureStats.length  // 去重后的 Feature 种类数
+                        this.growData[1].totalnums = data.total_feature_count || this.featureStats.reduce((sum, item) => sum + item.count, 0)  // 所有 Feature 的总数（包括重复）
                         
                         this.growData[2].nums = this.customerStats.length
                         this.growData[2].totalnums = this.customerStats.reduce((sum, item) => sum + item.count, 0)

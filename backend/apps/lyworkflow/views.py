@@ -111,18 +111,34 @@ class WorkflowInstanceViewSet(CustomModelViewSet):
         # 非超级管理员：查看自己发起的 + 待自己审批的
         user_id = request.user.id
         
-        # 自己发起的流程
-        my_apply = WorkflowInstance.objects.filter(applicant_id=user_id)
+        # 获取查询参数
+        show_only_pending = request.query_params.get('show_only_pending', 'false').lower() == 'true'
         
-        # 待自己审批的流程
-        pending_task_ids = WorkflowTask.objects.filter(
+        # 待自己审批的流程ID
+        pending_task_ids = set(WorkflowTask.objects.filter(
             approver_id=user_id,
-            status=0
-        ).values_list('instance_id', flat=True)
-        pending_instances = WorkflowInstance.objects.filter(id__in=pending_task_ids)
+            status=0  # status=0 表示待审批
+        ).values_list('instance_id', flat=True))
         
         # 合并查询集
-        self.queryset = (my_apply | pending_instances).distinct()
+        if show_only_pending:
+            # 只显示有待审批任务的流程
+            self.queryset = WorkflowInstance.objects.filter(id__in=pending_task_ids).distinct()
+        else:
+            # 默认显示：自己发起的未完成流程 + 有待审批任务的流程
+            from django.db.models import Q
+            
+            # 条件1：自己发起且未完成（status in [0, 1]）
+            # status: 0=草稿, 1=审批中
+            condition1 = Q(applicant_id=user_id) & Q(status__in=[0, 1])
+            
+            # 条件2：有待审批任务（无论是否是自己发起）
+            condition2 = Q(id__in=pending_task_ids)
+            
+            # 合并所有条件
+            self.queryset = WorkflowInstance.objects.filter(
+                condition1 | condition2
+            ).distinct()
         
         return super().list(request, *args, **kwargs)
 
@@ -491,8 +507,39 @@ class WorkflowTaskViewSet(CustomModelViewSet):
 
     def list(self, request, *args, **kwargs):
         """获取任务列表（只返回当前用户的任务）"""
-        if not request.user.is_superuser:
+        # 超级管理员查看所有待审批任务
+        if request.user.is_superuser:
+            # 超级管理员需要按流程实例去重，避免同一个流程显示多次
+            from django.db.models import Min
+            
+            # 获取所有待审批的流程实例ID（去重）
+            distinct_instance_ids = WorkflowTask.objects.filter(
+                status=0
+            ).values_list('instance_id', flat=True).distinct()
+            
+            # 对于每个流程实例，只取第一个待审批任务
+            first_task_ids = WorkflowTask.objects.filter(
+                instance_id__in=distinct_instance_ids,
+                status=0
+            ).values('instance_id').annotate(
+                min_id=Min('id')
+            ).values_list('min_id', flat=True)
+            
+            self.queryset = self.queryset.filter(id__in=first_task_ids)
+        else:
+            # 普通用户只显示分配给自己的任务
             self.queryset = self.queryset.filter(approver=request.user)
+        
+        # 如果前端传入了 instance 参数，则进一步过滤
+        instance_id = request.query_params.get('instance')
+        if instance_id:
+            self.queryset = self.queryset.filter(instance_id=instance_id)
+        
+        # 如果前端传入了 status 参数，则进一步过滤
+        status = request.query_params.get('status')
+        if status is not None:
+            self.queryset = self.queryset.filter(status=status)
+        
         return super().list(request, *args, **kwargs)
 
     @action(methods=['post'], detail=True)
@@ -515,11 +562,15 @@ class WorkflowTaskViewSet(CustomModelViewSet):
         task = self.get_object()
         
         # 验证权限
-        if task.approver != request.user:
+        if task.approver != request.user and not request.user.is_superuser:
             return ErrorResponse(msg='您没有权限审批该任务')
         
         if task.status != 0:
             return ErrorResponse(msg='该任务已处理')
+        
+        # 关键安全检查：申请人不能审批自己的流程
+        if task.instance.applicant == request.user:
+            return ErrorResponse(msg='申请人不能审批自己的流程申请')
         
         serializer = WorkflowApproveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -530,7 +581,7 @@ class WorkflowTaskViewSet(CustomModelViewSet):
         if approve_result in [2, 3]:
             if not approve_comment:
                 return ErrorResponse(msg='选择驳回或退回时，审批意见为必填项')
-        
+
         try:
             # 使用流程引擎处理审批
             engine = FlowEngine(task.instance)

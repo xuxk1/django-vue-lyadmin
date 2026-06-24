@@ -239,12 +239,15 @@
                     limit: 10,
                     total: 0
                 },
-                tableData:[]
+                tableData:[],
+                remainingDaysTimer: null  // 剩余天数更新定时器
             }
         },
         created() {
             this.getData()
             this.getStatistics()
+            // 启动定时器，每分钟更新一次剩余天数
+            this.startRemainingDaysTimer()
         },
         methods:{
             // 表格序列号
@@ -318,6 +321,8 @@
                     console.log('License Record API Response:', res) // 调试日志
                     if(res.code === 2000) {
                         this.tableData = res.data.data
+                        // 动态计算剩余天数
+                        this.updateRemainingDays()
                         this.pageparm.page = res.data.page;
                         this.pageparm.limit = res.data.limit;
                         this.pageparm.total = res.data.total;
@@ -444,6 +449,36 @@
                     this.$message.error('复制失败，请手动选择内容复制')
                 }
             },
+            // 动态计算剩余天数（基于当前日期）
+            updateRemainingDays() {
+                const now = new Date()
+                now.setHours(0, 0, 0, 0) // 设置为当天零点
+                
+                this.tableData.forEach(row => {
+                    if (row.end_time) {
+                        const endDate = new Date(row.end_time)
+                        endDate.setHours(0, 0, 0, 0) // 设置为过期日零点
+                        
+                        const diffTime = endDate - now
+                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+                        
+                        // 更新行的 remaining_days 字段
+                        row.remaining_days = Math.max(0, diffDays)
+                    }
+                })
+            },
+            // 启动剩余天数更新定时器
+            startRemainingDaysTimer() {
+                // 清除旧的定时器
+                if (this.remainingDaysTimer) {
+                    clearInterval(this.remainingDaysTimer)
+                }
+                
+                // 每分钟更新一次剩余天数
+                this.remainingDaysTimer = setInterval(() => {
+                    this.updateRemainingDays()
+                }, 60000) // 60秒
+            },
         },
         mounted() {
             window.addEventListener('resize', this.listenResize);
@@ -453,6 +488,11 @@
         },
         unmounted() {
             window.removeEventListener("resize", this.listenResize);
+            // 清除定时器
+            if (this.remainingDaysTimer) {
+                clearInterval(this.remainingDaysTimer)
+                this.remainingDaysTimer = null
+            }
         },
     }
 </script>

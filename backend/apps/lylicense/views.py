@@ -169,6 +169,131 @@ def _execute_remote_lmcrypt(template_file_path, product_name):
                 pass
 
 
+def _get_feature_id_from_api(product_name, feature_name):
+    """
+    通过第三方 API 获取 feature 的 ID
+    
+    Args:
+        product_name: 产品名称（如 GloryBolt、GloryLink）
+        feature_name: feature 名称（如 v2spef、link）
+    
+    Returns:
+        int or None: feature 的 ID，如果获取失败则返回 None
+    """
+    try:
+        import requests
+        from config import BITANSWER_API_BASE_URL,BITANSWER_BITKEY
+        
+        # 构建 API URL
+        api_url = f'{BITANSWER_API_BASE_URL}/e3/api/products/{product_name}/features?limit=1000'
+        logger.info(f"调用 API 获取 {product_name} 产品的 feature '{feature_name}' 的 ID: {api_url}")
+
+        headers = {
+                'Content-Type': 'application/json',
+                'bitkey': BITANSWER_BITKEY  # 固定的 bitkey
+            }
+        
+        response = requests.get(api_url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            logger.warning(f"API 调用失败，状态码: {response.status_code}, URL: {api_url}")
+            return None
+        
+        result = response.json()
+        
+        # 检查响应状态
+        if result.get('status') != 0:
+            logger.warning(f"API 返回错误状态: {result.get('status')}, 产品: {product_name}")
+            return None
+        
+        # 解析数据
+        data = result.get('data', {})
+        items = data.get('items', [])
+        
+        if not items:
+            logger.warning(f"未找到产品 '{product_name}' 的任何 feature")
+            return None
+        
+        # 【优化】直接遍历所有 feature，精确匹配 feature_name
+        # API 返回该产品所有的 feature 列表，我们只需要找到匹配的即可
+        for item in items:
+            item_name = item.get('name', '')
+            item_id = item.get('id')
+            
+            # 精确匹配 feature 名称
+            if item_name == feature_name:
+                logger.info(f"✅ 找到 feature '{feature_name}' 的 ID: {item_id}")
+                return item_id  # 找到第一个匹配的立即返回
+        
+        # 【优化】如果没有精确匹配，尝试模糊匹配
+        # 例如：feature_name='v2spef' 可能对应 'v2spef_2.0' 或 'v2spef_v3'
+        for item in items:
+            item_name = item.get('name', '')
+            item_id = item.get('id')
+            
+            # 模糊匹配：feature_name 是 item_name 的一部分，或者反过来
+            if feature_name in item_name or item_name in feature_name:
+                logger.info(f"️ 使用模糊匹配找到 feature '{feature_name}' -> '{item_name}', ID: {item_id}")
+                return item_id  # 找到第一个匹配的立即返回
+        
+        logger.warning(f"未在产品 '{product_name}' 的所有 feature 中找到 '{feature_name}'")
+        return None
+        
+    except Exception as e:
+        logger.error(f"调用 API 获取 feature ID 失败: {str(e)}, 产品: {product_name}, feature: {feature_name}")
+        return None
+
+
+def _upload_bitanswer_license_to_remote(local_file_path, remote_filename):
+    """
+    将 Bitanswer License 文件复制到远程挂载目录
+    
+    Args:
+        local_file_path: 本地 .upd 文件路径
+        remote_filename: 远程文件名（包含扩展名）
+    
+    Returns:
+        dict: 复制结果
+            {
+                'success': bool,
+                'remote_path': str,  # 远程服务器上的完整路径
+                'error': str  # 错误信息（如果失败）
+            }
+    """
+    try:
+        import shutil
+        from config import SSH_REMOTE_TEMPLATE_DIR
+        
+        logger.info(f"准备复制 Bitanswer License 文件到挂载目录: {local_file_path}")
+        
+        # 构建远程文件路径
+        remote_dir = SSH_REMOTE_TEMPLATE_DIR
+        remote_file_path = os.path.join(remote_dir, remote_filename)
+        
+        # 确保目标目录存在
+        if not os.path.exists(remote_dir):
+            logger.warning(f"远程目录不存在，尝试创建: {remote_dir}")
+            os.makedirs(remote_dir, exist_ok=True)
+        
+        # 复制文件
+        shutil.copy2(local_file_path, remote_file_path)
+        logger.info(f"文件复制成功: {remote_file_path}")
+        
+        return {
+            'success': True,
+            'remote_path': remote_file_path,
+            'message': f'Bitanswer License 文件已复制到: {remote_file_path}'
+        }
+        
+    except Exception as e:
+        error_msg = f"复制到远程目录失败: {str(e)}"
+        logger.error(error_msg)
+        return {
+            'success': False,
+            'error': error_msg
+        }
+
+
 def get_applicant_from_transformed_data(transformed_data, license_type, user_type, field_name='ApplicantID'):
     """
     从转换后的 JSON 数据中获取申请人账号
@@ -1132,9 +1257,66 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     flexnet_template_files = {}  # {product: template_file_path}
                     if license_type == 'flexnet':
                         try:
-                            # 遍历每个产品，为其生成独立的 .lic 文件
+                            # 特殊产品分组：GloryEX、GloryEX3D、GloryPolaris 合并为一个模板文件
+                            gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris']
+                            
+                            # 第一步：检测是否存在 GloryEX 组的产品
+                            has_gloryex_group = False
+                            gloryex_products_found = []
+                            for product in product_features.keys():
+                                if product in gloryex_group_products:
+                                    has_gloryex_group = True
+                                    gloryex_products_found.append(product)
+                            
+                            logger.info(f"FlexNet模板生成 - GloryEX 组产品检测结果: has_gloryex_group={has_gloryex_group}, 找到的产品={gloryex_products_found}")
+                            
+                            # 第二步：如果存在 GloryEX 组产品，先合并生成一个模板文件
+                            if has_gloryex_group:
+                                logger.info("开始合并生成 GloryEX 组的 FlexNet 预制作模板文件")
+                                
+                                # 合并 GloryEX 组的所有产品的 features
+                                merged_gloryex_features = {}
+                                for group_product in gloryex_group_products:
+                                    if group_product in product_features:
+                                        merged_gloryex_features.update(product_features[group_product])
+                                        logger.info(f"合并产品 {group_product} 的 feature 到模板中")
+                                
+                                if merged_gloryex_features:
+                                    # 获取第一个 GloryEX 组产品的 keyword（如果有的话）
+                                    gloryex_keyword = None
+                                    for ui in user_info_list:
+                                        product = ui.get('Product')
+                                        if product and product in gloryex_group_products:
+                                            gloryex_keyword = ui.get('Keyword')
+                                            break
+                                    
+                                    # 生成合并的模板文件
+                                    template_file_path = _generate_flexnet_template_file(
+                                        serial_number=serial_number,
+                                        mac_address=mac_address,
+                                        hostname=hostname,
+                                        product_name='GloryEX',  # 统一使用 GloryEX 作为产品名
+                                        product_features={'GloryEX': merged_gloryex_features},  # 传入合并后的 features
+                                        user_info_list=user_info_list,
+                                        file_hash=file_hash,
+                                        keyword=gloryex_keyword
+                                    )
+                                    if template_file_path:
+                                        flexnet_template_files['GloryEX'] = template_file_path
+                                        logger.info(f"GloryEX 组合并模板文件已生成: {template_file_path}")
+                                        # 标记这三个产品为已处理
+                                        for p in gloryex_group_products:
+                                            if p in product_features:
+                                                flexnet_template_files[p] = template_file_path  # 指向同一个文件
+                            
+                            # 第三步：处理其他非 GloryEX 组的产品
                             for product, product_feats in product_features.items():
                                 if not product_feats:
+                                    continue
+                                
+                                # 如果是 GloryEX 组产品且已经生成了合并模板，跳过
+                                if product in gloryex_group_products and 'GloryEX' in flexnet_template_files:
+                                    logger.info(f"产品 {product} 已包含在 GloryEX 组合并模板中，跳过单独生成")
                                     continue
                                 
                                 # 从 user_info 中获取 keyword（如果有的话）
@@ -1159,7 +1341,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                     logger.info(f"产品 {product} 的 FlexNet 预制作模板文件已生成: {template_file_path}")
                             
                             if flexnet_template_files:
-                                logger.info(f"共生成 {len(flexnet_template_files)} 个 FlexNet 预制作模板文件")
+                                logger.info(f"共生成 {len(set(flexnet_template_files.values()))} 个独立的 FlexNet 预制作模板文件")
                         except Exception as e:
                             logger.error(f"生成 FlexNet 预制作模板文件失败: {str(e)}", exc_info=True)
                             # 不阻断流程，继续创建申请记录
@@ -1171,271 +1353,314 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     processed_products = set()  # 已处理的产品集合
                     created_applications = []  # 记录创建的申请
                     
+                    # 第一步：检测是否存在 GloryEX 组的产品
+                    has_gloryex_group = False
+                    gloryex_products_found = []
+                    for user_info in user_info_list:
+                        product = user_info.get('Product')
+                        if product and product in gloryex_group_products:
+                            has_gloryex_group = True
+                            gloryex_products_found.append(product)
+                            logger.info(f"检测到 GloryEX 组产品: {product}")
+                    
+                    logger.info(f"GloryEX 组产品检测结果: has_gloryex_group={has_gloryex_group}, 找到的产品={gloryex_products_found}")
+                    logger.info(f"product_features 中的所有产品: {list(product_features.keys())}")
+                    
+                    # 第二步：如果存在 GloryEX 组产品，先合并处理
+                    if has_gloryex_group:
+                        logger.info("开始合并处理 GloryEX 组产品")
+                        
+                        # 合并处理GloryEX组的所有产品
+                        gloryex_features = {}
+                        gloryex_feature_list = []
+                        min_start_time = None
+                        max_end_time = None
+                        
+                        for group_product in gloryex_group_products:
+                            logger.info(f"检查是否处理产品: {group_product}")
+                            if group_product in product_features:
+                                logger.info(f"合并产品 {group_product} 的 feature: {list(product_features[group_product].keys())}")
+                                # 合并feature
+                                gloryex_features.update(product_features[group_product])
+                                # 合并feature列表
+                                for feat in product_features[group_product].keys():
+                                    if feat not in gloryex_feature_list:
+                                        gloryex_feature_list.append(feat)
+                            else:
+                                logger.info(f"产品 {group_product} 不在 product_features 中，跳过")
+                            
+                            # 查找对应产品的UserInfo，获取时间
+                            for ui in user_info_list:
+                                if ui.get('Product') == group_product:
+                                    start_timestamp = ui.get('Startdate')
+                                    end_timestamp = ui.get('Expirydate')
+                                    logger.info(f"产品 {group_product} 的时间: Start={start_timestamp}, End={end_timestamp}")
+                                    
+                                    if start_timestamp and isinstance(start_timestamp, (int, float)):
+                                        from datetime import datetime
+                                        start_time = datetime.fromtimestamp(start_timestamp / 1000)
+                                        if min_start_time is None or start_time < min_start_time:
+                                            min_start_time = start_time
+                                    
+                                    if end_timestamp and isinstance(end_timestamp, (int, float)):
+                                        from datetime import datetime
+                                        end_time = datetime.fromtimestamp(end_timestamp / 1000)
+                                        if max_end_time is None or end_time > max_end_time:
+                                            max_end_time = end_time
+                                    break
+                            
+                            # 标记为已处理
+                            processed_products.add(group_product)
+                        
+                        logger.info(f"合并后的 feature 列表: {gloryex_feature_list}")
+                        logger.info(f"合并后的 quantity: {gloryex_features}")
+                        logger.info(f"时间范围: {min_start_time} ~ {max_end_time}")
+                        
+                        # 处理MAC地址：在最外层已经处理过了，直接使用
+                        # mac_address 变量在第378行已经提取并处理
+
+                        # 提取申请人ID（用于邮件发送）
+                        applicant_id = get_applicant_from_transformed_data(
+                            transformed_data=transformed_data,
+                            license_type=license_type,
+                            user_type=user_type,  # 使用从JSON解析的user_type，而不是硬编码'external'
+                            field_name='ApplicantID'
+                        )
+
+                        # 检查该产品的申请记录是否已存在
+                        if LicenseApplication.objects.filter(file_hash=file_hash, product='GloryEX').exists():
+                            logger.info(f'GloryEX产品申请记录已存在（文件哈希: {file_hash}），跳过创建')
+                        else:
+                            logger.info(f"准备创建 GloryEX 组合并申请记录")
+                            logger.info(f"  - applicant: {applicant or '未知申请人'}")
+                            logger.info(f"  - applicant_id: {applicant_id}")
+                            logger.info(f"  - license_type: {license_type}")
+                            logger.info(f"  - features: {gloryex_feature_list}")
+                            logger.info(f"  - quantity: {gloryex_features}")
+                            logger.info(f"  - start_time: {min_start_time}")
+                            logger.info(f"  - end_time: {max_end_time}")
+                            logger.info(f"  - file_hash: {file_hash}")
+                            
+                            # 创建GloryEX组的申请记录
+                            application = LicenseApplication.objects.create(
+                                applicant=applicant or '未知申请人',
+                                applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
+                                application_type=license_type,
+                                feature=gloryex_feature_list if gloryex_feature_list else [],
+                                product='GloryEX',  # 统一使用GloryEX作为产品名
+                                serial_number=serial_number or '',
+                                file_hash=file_hash,
+                                customer_name=customer_name or '未指定客户',
+                                mac_address=mac_address,
+                                hostname=hostname or '',
+                                start_time=min_start_time,
+                                end_time=max_end_time,
+                                quantity=gloryex_features if gloryex_features else {},
+                                json_data=json_data,
+                                status=3,
+                                max_retry_count=3
+                            )
+                            created_applications.append(application.id)
+                            logger.info(f"创建 GloryEX 组合并申请记录成功，ID: {application.id}")
+                            
+                            # 检查结束时间是否即将过期（小于30天）
+                            from datetime import datetime, timedelta
+                            if max_end_time:
+                                days_until_expiry = (max_end_time - datetime.now()).days
+                                if days_until_expiry < 30:
+                                    logger.warning(f"GloryEX 组合并 License 将在 {days_until_expiry} 天后过期 ({max_end_time})，发送提醒邮件")
+                                    try:
+                                        from utils.email import EmailManager
+                                        
+                                        # 通过映射表从转换后的数据中获取申请人账号
+                                        owner_account = get_applicant_from_transformed_data(
+                                            transformed_data, license_type, user_type
+                                        )
+                                        
+                                        if not owner_account:
+                                            logger.warning("未获取到申请人账号，使用默认值")
+                                            owner_account = config.MAIL_RECIPIENT
+                                        
+                                        # 发送即将过期提醒邮件
+                                        email_manager = EmailManager()
+                                        email_manager.license_expired_send_email(owner_account, application, max_end_time)
+                                        logger.info(f"已发送 License 即将过期提醒邮件给: {owner_account}")
+                                    except Exception as email_err:
+                                        logger.error(f"发送过期提醒邮件失败: {str(email_err)}")
+                            
+                            # 如果是 FlexNet 类型，立即生成 license 文件
+                            if license_type == 'flexnet':
+                                try:
+                                    # 获取对应的预制作模板文件路径（使用第一个产品的模板）
+                                    template_file = None
+                                    for group_product in gloryex_group_products:
+                                        if group_product in flexnet_template_files:
+                                            template_file = flexnet_template_files[group_product]
+                                            break
+                                    
+                                    if template_file:
+                                        # 将相对路径转换为绝对路径
+                                        abs_template_file = os.path.join(MEDIA_ROOT, template_file)
+                                        gen_result = self._generate_flexnet_license(
+                                            instance=application,
+                                            json_data=json_data,
+                                            template_file_path=abs_template_file
+                                        )
+                                        if gen_result.get('success'):
+                                            logger.info(f"GloryEX组 License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                        else:
+                                            logger.error(f"GloryEX组 License 文件生成失败: {gen_result.get('error')}")
+                                    else:
+                                        logger.warning(f"未找到 GloryEX 组的预制作模板文件，跳过 License 生成")
+                                except Exception as e:
+                                    logger.error(f"生成 GloryEX组 License 文件异常: {str(e)}", exc_info=True)
+                            
+                            # 如果是 Bitanswer 类型，直接调用 API 生成 license 文件
+                            elif license_type == 'bitanswer':
+                                try:
+                                    gen_result = self._generate_bitanswer_license(
+                                        instance=application,
+                                        json_data=json_data
+                                    )
+                                    if gen_result.get('success'):
+                                        logger.info(f"GloryEX组 Bitanswer License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                    else:
+                                        logger.error(f"GloryEX组 Bitanswer License 文件生成失败: {gen_result.get('error')}")
+                                except Exception as e:
+                                    logger.error(f"生成 GloryEX组 Bitanswer License 文件异常: {str(e)}", exc_info=True)
+                    
+                    # 第三步：处理其他非 GloryEX 组的产品
                     for user_info in user_info_list:
                         product = user_info.get('Product')
                         if not product:
                             continue
                         
+                        logger.info(f"检查产品: {product}")
+                        
                         # 如果产品已经处理过，跳过
                         if product in processed_products:
+                            logger.info(f"产品 {product} 已在 GloryEX 组合并中处理过，跳过")
                             continue
                         
-                        # 判断是否属于GloryEX组
-                        if product in gloryex_group_products:
-                            # 合并处理GloryEX组的所有产品
-                            gloryex_features = {}
-                            gloryex_feature_list = []
-                            min_start_time = None
-                            max_end_time = None
-                            
-                            for group_product in gloryex_group_products:
-                                if group_product in product_features:
-                                    # 合并feature
-                                    gloryex_features.update(product_features[group_product])
-                                    # 合并feature列表
-                                    for feat in product_features[group_product].keys():
-                                        if feat not in gloryex_feature_list:
-                                            gloryex_feature_list.append(feat)
-                                
-                                # 查找对应产品的UserInfo，获取时间
-                                for ui in user_info_list:
-                                    if ui.get('Product') == group_product:
-                                        start_timestamp = ui.get('Startdate')
-                                        end_timestamp = ui.get('Expirydate')
-                                        
-                                        if start_timestamp and isinstance(start_timestamp, (int, float)):
-                                            from datetime import datetime
-                                            start_time = datetime.fromtimestamp(start_timestamp / 1000)
-                                            if min_start_time is None or start_time < min_start_time:
-                                                min_start_time = start_time
-                                        
-                                        if end_timestamp and isinstance(end_timestamp, (int, float)):
-                                            from datetime import datetime
-                                            end_time = datetime.fromtimestamp(end_timestamp / 1000)
-                                            if max_end_time is None or end_time > max_end_time:
-                                                max_end_time = end_time
-                                        break
-                                
-                                processed_products.add(group_product)
-                            
-                            # 处理MAC地址：在最外层已经处理过了，直接使用
-                            # mac_address 变量在第378行已经提取并处理
-
-                            # 提取申请人ID（用于邮件发送）
-                            applicant_id = get_applicant_from_transformed_data(
-                                transformed_data=transformed_data,
-                                license_type=license_type,
-                                user_type=user_type,  # 使用从JSON解析的user_type，而不是硬编码'external'
-                                field_name='ApplicantID'
-                            )
-
-                            # 检查该产品的申请记录是否已存在
-                            if LicenseApplication.objects.filter(file_hash=file_hash, product='GloryEX').exists():
-                                logger.info(f'GloryEX产品申请记录已存在（文件哈希: {file_hash}），跳过创建')
-                            else:
-                                # 创建GloryEX组的申请记录
-                                application = LicenseApplication.objects.create(
-                                    applicant=applicant or '未知申请人',
-                                    applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
-                                    application_type=license_type,
-                                    feature=gloryex_feature_list if gloryex_feature_list else [],
-                                    product='GloryEX',  # 统一使用GloryEX作为产品名
-                                    serial_number=serial_number or '',
-                                    file_hash=file_hash,
-                                    customer_name=customer_name or '未指定客户',
-                                    mac_address=mac_address,
-                                    hostname=hostname or '',
-                                    start_time=min_start_time,
-                                    end_time=max_end_time,
-                                    quantity=gloryex_features if gloryex_features else {},
-                                    json_data=json_data,
-                                    status=3,
-                                    max_retry_count=3
-                                )
-                                created_applications.append(application.id)
-                                logger.info(f"创建GloryEX组申请记录成功，ID: {application.id}，包含产品: {', '.join([p for p in gloryex_group_products if p in product_features])}")
-                                
-                                # 检查结束时间是否即将过期（小于30天）
-                                from datetime import datetime, timedelta
-                                if max_end_time:
-                                    days_until_expiry = (max_end_time - datetime.now()).days
-                                    if days_until_expiry < 30:
-                                        logger.warning(f"GloryEX组 License 将在 {days_until_expiry} 天后过期 ({max_end_time})，发送提醒邮件")
-                                        try:
-                                            from utils.email import EmailManager
-                                            
-                                            # 通过映射表从转换后的数据中获取申请人账号
-                                            owner_account = get_applicant_from_transformed_data(
-                                                transformed_data, license_type, user_type
-                                            )
-                                            
-                                            if not owner_account:
-                                                logger.warning("未获取到申请人账号，使用默认值")
-                                                owner_account = config.MAIL_RECIPIENT
-                                            
-                                            # 发送即将过期提醒邮件
-                                            email_manager = EmailManager()
-                                            email_manager.license_expired_send_email(owner_account, application, max_end_time)
-                                            logger.info(f"已发送 License 即将过期提醒邮件给: {owner_account}")
-                                        except Exception as email_err:
-                                            logger.error(f"发送过期提醒邮件失败: {str(email_err)}")
-                                
-                                # 如果是 FlexNet 类型，立即生成 license 文件
-                                if license_type == 'flexnet':
-                                    try:
-                                        # 获取对应的预制作模板文件路径（使用第一个产品的模板）
-                                        template_file = None
-                                        for group_product in gloryex_group_products:
-                                            if group_product in flexnet_template_files:
-                                                template_file = flexnet_template_files[group_product]
-                                                break
-                                        
-                                        if template_file:
-                                            # 将相对路径转换为绝对路径
-                                            abs_template_file = os.path.join(MEDIA_ROOT, template_file)
-                                            gen_result = self._generate_flexnet_license(
-                                                instance=application,
-                                                json_data=json_data,
-                                                template_file_path=abs_template_file
-                                            )
-                                            if gen_result.get('success'):
-                                                logger.info(f"GloryEX组 License 文件生成成功: {gen_result.get('file_relative_path')}")
-                                            else:
-                                                logger.error(f"GloryEX组 License 文件生成失败: {gen_result.get('error')}")
-                                        else:
-                                            logger.warning(f"未找到 GloryEX 组的预制作模板文件，跳过 License 生成")
-                                    except Exception as e:
-                                        logger.error(f"生成 GloryEX组 License 文件异常: {str(e)}", exc_info=True)
-                                
-                                # 如果是 Bitanswer 类型，直接调用 API 生成 license 文件
-                                elif license_type == 'bitanswer':
-                                    try:
-                                        gen_result = self._generate_bitanswer_license(
-                                            instance=application,
-                                            json_data=json_data
-                                        )
-                                        if gen_result.get('success'):
-                                            logger.info(f"GloryEX组 Bitanswer License 文件生成成功: {gen_result.get('file_relative_path')}")
-                                        else:
-                                            logger.error(f"GloryEX组 Bitanswer License 文件生成失败: {gen_result.get('error')}")
-                                    except Exception as e:
-                                        logger.error(f"生成 GloryEX组 Bitanswer License 文件异常: {str(e)}", exc_info=True)
+                        # 其他产品单独创建申请记录
+                        product_feats = product_features.get(product, {})
+                        feat_list = list(product_feats.keys())
+                        
+                        # 获取该产品的开始和结束时间
+                        start_timestamp = user_info.get('Startdate')
+                        end_timestamp = user_info.get('Expirydate')
+                        
+                        start_time = None
+                        end_time = None
+                        if start_timestamp and isinstance(start_timestamp, (int, float)):
+                            from datetime import datetime
+                            start_time = datetime.fromtimestamp(start_timestamp / 1000)
+                        if end_timestamp and isinstance(end_timestamp, (int, float)):
+                            from datetime import datetime
+                            end_time = datetime.fromtimestamp(end_timestamp / 1000)
+                        
+                        # 处理MAC地址：在最外层已经处理过了，直接使用
+                        # mac_address 变量在第378行已经提取并处理
+                        
+                        # 提取申请人ID（用于邮件发送）
+                        applicant_id = get_applicant_from_transformed_data(
+                            transformed_data=transformed_data,
+                            license_type=license_type,
+                            user_type=user_type,  # 使用从JSON解析的user_type，而不是硬编码'external'
+                            field_name='ApplicantID'
+                        )
+                        
+                        # 检查该产品的申请记录是否已存在
+                        if LicenseApplication.objects.filter(file_hash=file_hash, product=product).exists():
+                            logger.info(f'产品{product}申请记录已存在（文件哈希: {file_hash}），跳过创建')
                         else:
-                            # 其他产品单独创建申请记录
-                            product_feats = product_features.get(product, {})
-                            feat_list = list(product_feats.keys())
+                            logger.info(f"准备创建产品 {product} 的申请记录")
+                            logger.info(f"  - features: {feat_list}")
+                            logger.info(f"  - quantity: {product_feats}")
                             
-                            # 获取该产品的开始和结束时间
-                            start_timestamp = user_info.get('Startdate')
-                            end_timestamp = user_info.get('Expirydate')
-                            
-                            start_time = None
-                            end_time = None
-                            if start_timestamp and isinstance(start_timestamp, (int, float)):
-                                from datetime import datetime
-                                start_time = datetime.fromtimestamp(start_timestamp / 1000)
-                            if end_timestamp and isinstance(end_timestamp, (int, float)):
-                                from datetime import datetime
-                                end_time = datetime.fromtimestamp(end_timestamp / 1000)
-                            
-                            # 处理MAC地址：在最外层已经处理过了，直接使用
-                            # mac_address 变量在第378行已经提取并处理
-                            
-                            # 提取申请人ID（用于邮件发送）
-                            applicant_id = get_applicant_from_transformed_data(
-                                transformed_data=transformed_data,
-                                license_type=license_type,
-                                user_type=user_type,  # 使用从JSON解析的user_type，而不是硬编码'external'
-                                field_name='ApplicantID'
+                            application = LicenseApplication.objects.create(
+                                applicant=applicant or '未知申请人',
+                                applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
+                                application_type=license_type,
+                                feature=feat_list if feat_list else [],
+                                product=product,
+                                serial_number=serial_number or '',
+                                file_hash=file_hash,
+                                customer_name=customer_name or '未指定客户',
+                                mac_address=mac_address,
+                                hostname=hostname or '',
+                                start_time=start_time,
+                                end_time=end_time,
+                                quantity=product_feats if product_feats else {},
+                                json_data=json_data,
+                                status=3,
+                                max_retry_count=3
                             )
+                            created_applications.append(application.id)
+                            processed_products.add(product)
+                            logger.info(f"创建产品{product}申请记录成功，ID: {application.id}")
                             
-                            # 检查该产品的申请记录是否已存在
-                            if LicenseApplication.objects.filter(file_hash=file_hash, product=product).exists():
-                                logger.info(f'产品{product}申请记录已存在（文件哈希: {file_hash}），跳过创建')
-                            else:
-                                application = LicenseApplication.objects.create(
-                                    applicant=applicant or '未知申请人',
-                                    applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
-                                    application_type=license_type,
-                                    feature=feat_list if feat_list else [],
-                                    product=product,
-                                    serial_number=serial_number or '',
-                                    file_hash=file_hash,
-                                    customer_name=customer_name or '未指定客户',
-                                    mac_address=mac_address,
-                                    hostname=hostname or '',
-                                    start_time=start_time,
-                                    end_time=end_time,
-                                    quantity=product_feats if product_feats else {},
-                                    json_data=json_data,
-                                    status=3,
-                                    max_retry_count=3
-                                )
-                                created_applications.append(application.id)
-                                processed_products.add(product)
-                                logger.info(f"创建产品{product}申请记录成功，ID: {application.id}")
-                                
-                                # 检查结束时间是否即将过期（小于30天）
-                                from datetime import datetime, timedelta
-                                if end_time:
-                                    days_until_expiry = (end_time - datetime.now()).days
-                                    if days_until_expiry < 30:
-                                        logger.warning(f"产品 {product} License 将在 {days_until_expiry} 天后过期 ({end_time})，发送提醒邮件")
-                                        try:
-                                            from utils.email import EmailManager
-                                            
-                                            # 通过映射表从转换后的数据中获取申请人账号
-                                            owner_account = get_applicant_from_transformed_data(
-                                                transformed_data, license_type, user_type
-                                            )
-                                            
-                                            if not owner_account:
-                                                logger.warning("未获取到申请人账号，使用默认值")
-                                                owner_account = config.MAIL_RECIPIENT
-                                            
-                                            # 发送即将过期提醒邮件
-                                            email_manager = EmailManager()
-                                            email_manager.license_expired_send_email(owner_account, application, end_time)
-                                            logger.info(f"已发送 License 即将过期提醒邮件给: {owner_account}")
-                                        except Exception as email_err:
-                                            logger.error(f"发送过期提醒邮件失败: {str(email_err)}")
-                                
-                                # 如果是 FlexNet 类型，立即生成 license 文件
-                                if license_type == 'flexnet':
+                            # 检查结束时间是否即将过期（小于30天）
+                            from datetime import datetime, timedelta
+                            if end_time:
+                                days_until_expiry = (end_time - datetime.now()).days
+                                if days_until_expiry < 30:
+                                    logger.warning(f"产品 {product} License 将在 {days_until_expiry} 天后过期 ({end_time})，发送提醒邮件")
                                     try:
-                                        # 获取对应的预制作模板文件路径
-                                        template_file = flexnet_template_files.get(product)
+                                        from utils.email import EmailManager
                                         
-                                        if template_file:
-                                            # 将相对路径转换为绝对路径
-                                            abs_template_file = os.path.join(MEDIA_ROOT, template_file)
-                                            gen_result = self._generate_flexnet_license(
-                                                instance=application,
-                                                json_data=json_data,
-                                                template_file_path=abs_template_file
-                                            )
-                                            if gen_result.get('success'):
-                                                logger.info(f"产品 {product} License 文件生成成功: {gen_result.get('file_relative_path')}")
-                                            else:
-                                                logger.error(f"产品 {product} License 文件生成失败: {gen_result.get('error')}")
-                                        else:
-                                            logger.warning(f"未找到产品 {product} 的预制作模板文件，跳过 License 生成")
-                                    except Exception as e:
-                                        logger.error(f"生成产品 {product} License 文件异常: {str(e)}", exc_info=True)
-                                
-                                # 如果是 Bitanswer 类型，直接调用 API 生成 license 文件
-                                elif license_type == 'bitanswer':
-                                    try:
-                                        gen_result = self._generate_bitanswer_license(
+                                        # 通过映射表从转换后的数据中获取申请人账号
+                                        owner_account = get_applicant_from_transformed_data(
+                                            transformed_data, license_type, user_type
+                                        )
+                                        
+                                        if not owner_account:
+                                            logger.warning("未获取到申请人账号，使用默认值")
+                                            owner_account = config.MAIL_RECIPIENT
+                                        
+                                        # 发送即将过期提醒邮件
+                                        email_manager = EmailManager()
+                                        email_manager.license_expired_send_email(owner_account, application, end_time)
+                                        logger.info(f"已发送 License 即将过期提醒邮件给: {owner_account}")
+                                    except Exception as email_err:
+                                        logger.error(f"发送过期提醒邮件失败: {str(email_err)}")
+                            
+                            # 如果是 FlexNet 类型，立即生成 license 文件
+                            if license_type == 'flexnet':
+                                try:
+                                    # 获取对应的预制作模板文件路径
+                                    template_file = flexnet_template_files.get(product)
+                                    
+                                    if template_file:
+                                        # 将相对路径转换为绝对路径
+                                        abs_template_file = os.path.join(MEDIA_ROOT, template_file)
+                                        gen_result = self._generate_flexnet_license(
                                             instance=application,
-                                            json_data=json_data
+                                            json_data=json_data,
+                                            template_file_path=abs_template_file
                                         )
                                         if gen_result.get('success'):
-                                            logger.info(f"产品 {product} Bitanswer License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                            logger.info(f"产品 {product} License 文件生成成功: {gen_result.get('file_relative_path')}")
                                         else:
-                                            logger.error(f"产品 {product} Bitanswer License 文件生成失败: {gen_result.get('error')}")
-                                    except Exception as e:
-                                        logger.error(f"生成产品 {product} Bitanswer License 文件异常: {str(e)}", exc_info=True)
+                                            logger.error(f"产品 {product} License 文件生成失败: {gen_result.get('error')}")
+                                    else:
+                                        logger.warning(f"未找到产品 {product} 的预制作模板文件，跳过 License 生成")
+                                except Exception as e:
+                                    logger.error(f"生成产品 {product} License 文件异常: {str(e)}", exc_info=True)
+                            
+                            # 如果是 Bitanswer 类型，直接调用 API 生成 license 文件
+                            elif license_type == 'bitanswer':
+                                try:
+                                    gen_result = self._generate_bitanswer_license(
+                                        instance=application,
+                                        json_data=json_data
+                                    )
+                                    if gen_result.get('success'):
+                                        logger.info(f"产品 {product} Bitanswer License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                    else:
+                                        logger.error(f"产品 {product} Bitanswer License 文件生成失败: {gen_result.get('error')}")
+                                except Exception as e:
+                                    logger.error(f"生成产品 {product} Bitanswer License 文件异常: {str(e)}", exc_info=True)
                     
                     if created_applications:
                         logger.info(f"共创建 {len(created_applications)} 条申请记录，IDs: {created_applications}")
@@ -1875,89 +2100,459 @@ class LicenseApplicationViewSet(CustomModelViewSet):
     def _generate_bitanswer_license(self, instance, json_data):
         """
         生成Bitanswer类型的License
-        解析JSON数据，拼装参数，调用Bitanswer API
+        完整流程：
+        1. 调用获取授权码接口（generate_sn）获取 sn
+        2. 调用授权码绑定新用户接口（sn/customers）绑定 MAC 地址
+        3. 调用制作license接口（sn/update_code）获取 code
+        4. 将 code 写入 .upd 文件
+        
+        关键逻辑：将本地的feature名称转换为第三方平台的featureID
         """
         try:
             import requests
+            from apps.lylicense.models import LicenseFieldMapping
+            from config import BITANSWER_API_BASE_URL, BITANSWER_BITKEY
             
-            # 从JSON数据中提取参数
+            # 从JSON数据中提取基础参数
+            customer_name = json_data.get('customer_name', instance.customer_name)
+            mac_address = json_data.get('mac_address', instance.mac_address)
+            
+            # 优先使用 application 实例中的时间字段
+            start_time = instance.start_time
+            end_time = instance.end_time
+            
+            # 如果 application 中没有，尝试从 json_data 中获取
+            if not start_time:
+                start_time = json_data.get('start_time')
+            if not end_time:
+                end_time = json_data.get('end_time')
+            
+            quantity = json_data.get('quantity', instance.quantity) or {}
+            
+            # 获取用户类型和License类型，用于查询映射表
+            user_type = 'external'  # Bitanswer通常是外部用户
+            license_type = 'bitanswer'
+            
+            # 获取产品名
+            original_product = instance.product
+            
+            # 特殊处理：GloryEX 产品组统一使用 "GloryEX" 作为产品名
+            gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris']
+            glorybolt_group_products = ['GloryBolt', 'GloryGrid']
+            is_glorybolt_group = False  # 标记是否为 GloryBolt 组
+            
+            if original_product in gloryex_group_products:
+                product = 'GloryEX'  # 统一使用 GloryEX
+                logger.info(f"产品属于 GloryEX 组，原始产品: {original_product} -> 统一使用: {product}")
+            elif original_product in glorybolt_group_products:
+                product = 'GloryBolt'  # 统一使用 GloryBolt
+                is_glorybolt_group = True  # 标记为 GloryBolt 组
+                logger.info(f"产品属于 GloryBolt 组，原始产品: {original_product} -> 统一使用: {product}（将合并处理 GloryBolt 和 GloryGrid 的 feature）")
+            else:
+                product = original_product
+            
+            # 构建features列表（包含featureID）
+            features_list = []
+            total_users_number = 0  # 总授权数量
+            
+            # 从 quantity 中获取 feature 及其数量
+            if isinstance(quantity, dict):
+                for feature_name, users_count in quantity.items():
+                    # 【关键】对于 GloryBolt 组，统一使用 'GloryBolt' 作为产品名称
+                    # api_product_name = product if is_glorybolt_group else feature_name
+                                
+                    # 处理嵌套结构：如果 users_count 是字典，需要进一步提取
+                    if isinstance(users_count, dict):
+                        # 嵌套结构：{feature_name: {sub_feature: count}}
+                        # 这种情况下，遍历子字典
+                        for sub_feature, sub_count in users_count.items():
+                            if isinstance(sub_count, (int, float)):
+                                actual_feature_name = f"{sub_feature}"
+                                actual_users_count = int(sub_count)
+                                total_users_number += actual_users_count
+                                                            
+                                # 【优化】通过 API 获取 featureId
+                                # 对于 GloryBolt 组，使用统一的 'GloryBolt' 作为产品名称
+                                feature_id = _get_feature_id_from_api(product, actual_feature_name)
+                                                            
+                                if feature_id:
+                                    features_list.append({
+                                        'id': feature_id, 
+                                        'users': actual_users_count,
+                                        'endDate': end_time.strftime('%Y-%m-%d') if end_time else None
+                                    })
+                                    logger.info(f"Feature转换(嵌套): {actual_feature_name} -> FID={feature_id}, 授权数量={actual_users_count}")
+                                else:
+                                    logger.warning(f"未找到{product}产品的feature '{actual_feature_name}' 的ID，跳过该feature")
+                    elif isinstance(users_count, (int, float)):
+                        # 简单结构：{feature_name: count}
+                        actual_users_count = int(users_count)
+                        total_users_number += actual_users_count
+                                                    
+                        # 【优化】通过 API 获取 featureId
+                        # 对于 GloryBolt 组，使用统一的 'GloryBolt' 作为产品名称
+                        feature_id = _get_feature_id_from_api(original_product, feature_name)
+                                                    
+                        if feature_id:
+                            features_list.append({
+                                'id': feature_id,  
+                                'users': actual_users_count,
+                                'endDate': end_time.strftime('%Y-%m-%d') if end_time else None
+                            })
+                            logger.info(f"Feature转换: {feature_name} -> FID={feature_id}, 授权数量={actual_users_count}")
+                        else:
+                            logger.warning(f"未找到feature '{feature_name}' 的ID，跳过该feature")
+            
+            # 构建请求参数（按照第三方API要求的格式）
             params = {
-                'customer_name': json_data.get('customer_name', instance.customer_name),
-                'mac_address': json_data.get('mac_address', instance.mac_address),
-                'feature': json_data.get('feature', instance.feature),
-                'start_time': json_data.get('start_time'),
-                'end_time': json_data.get('end_time'),
-                'quantity': json_data.get('quantity', instance.quantity),
+                'product': {
+                    'productName': product  # 产品名
+                },
+                'template': {
+                    'name': 'test_api'  # 模版名，可根据实际情况调整
+                },
+                'business': {
+                    'name': 'test'  # 业务名，可根据实际情况调整
+                },
+                'usersNumber': total_users_number,  # 总授权数量（所有feature的数量之和）
+                'startDate': start_time.strftime('%Y-%m-%d') if start_time else None,
+                'endDate': end_time.strftime('%Y-%m-%d') if end_time else None,
+                'features': features_list  # Feature列表，包含id(FID)、users(授权数量)、endDate
             }
             
-            # 如果JSON数据中有Keyword字段，添加到参数中
-            if 'Keyword' in json_data:
-                params['keyword'] = json_data['Keyword']
-                logger.info(f"添加Keyword参数: {params['keyword']}")
-            
-            # Bitanswer API配置
-            bitanswer_api_url = 'http://bitanswer-server/api/generate-license'  # 替换为实际API地址
-            bitanswer_api_key = 'your-api-key'  # 替换为实际的API Key
-            
+            # 设置通用 headers（三个接口都需要 bitkey）
             headers = {
                 'Content-Type': 'application/json',
-                'Authorization': f'Bearer {bitanswer_api_key}'
+                'bitkey': BITANSWER_BITKEY  # 固定的 bitkey
             }
             
-            logger.info(f"调用Bitanswer API: {bitanswer_api_url}")
-            logger.info(f"请求参数: {params}")
+            logger.info(f"开始 Bitanswer License 生成流程")
+            logger.info(f"步骤1: 调用获取授权码接口")
+            logger.info(f"请求参数: {json.dumps(params, ensure_ascii=False, indent=2)}")
             
-            # 调用Bitanswer API
-            response = requests.post(
-                bitanswer_api_url,
+            # ==================== 步骤1: 获取授权码 ====================
+            generate_sn_url = f'{BITANSWER_API_BASE_URL}/e3/api/sns/generate_sn?count=1'
+            
+            response1 = requests.post(
+                generate_sn_url,
                 json=params,
                 headers=headers,
                 timeout=30
             )
             
-            if response.status_code == 200:
-                result_data = response.json()
-                
-                # 构建license文件路径
-                license_dir = os.path.join(MEDIA_ROOT, 'license', 'bitanswer')
-                if not os.path.exists(license_dir):
-                    os.makedirs(license_dir)
-                
-                file_name = f'{instance.id}_bit.upd'
-                license_file = os.path.join(license_dir, file_name)
-                relative_path = os.path.join('license', 'bitanswer', file_name)
-                
-                # 保存API返回的license内容
-                license_content = result_data.get('license_content', '')
-                with open(license_file, 'w', encoding='utf-8') as f:
-                    f.write(license_content)
-                
-                result = {
-                    'success': True,
-                    'file_name': file_name,
-                    'file_relative_path': relative_path,
-                    'directory': os.path.join(MEDIA_ROOT, 'license', 'bitanswer'),
-                    'full_path': license_file,
-                    'vendor': 'Bitanswer',
-                    'version': result_data.get('version', '1.0'),
-                    'license_id': result_data.get('license_id', f'BA-{instance.id}'),
-                    'message': 'Bitanswer License制作成功',
-                    'api_response': result_data
-                }
-            else:
-                result = {
+            if response1.status_code != 200:
+                return {
                     'success': False,
-                    'error': f'Bitanswer API调用失败，状态码: {response.status_code}',
-                    'api_response': response.text
+                    'error': f'步骤1失败：获取授权码接口调用失败，状态码: {response1.status_code}',
+                    'api_response': response1.text
                 }
             
+            result1 = response1.json()
+            logger.info(f"步骤1响应: {json.dumps(result1, ensure_ascii=False, indent=2)}")
+            
+            # 检查响应状态
+            if result1.get('status') != 0:
+                return {
+                    'success': False,
+                    'error': f'步骤1失败：API返回错误状态 {result1.get("status")}',
+                    'api_response': result1
+                }
+            
+            # 提取 sn
+            data = result1.get('data', {})
+            items = data.get('items', [])
+            if not items:
+                return {
+                    'success': False,
+                    'error': '步骤1失败：API返回数据中没有 items',
+                    'api_response': result1
+                }
+            
+            sn = items[0].get('sn')
+            if not sn:
+                return {
+                    'success': False,
+                    'error': '步骤1失败：API返回数据中没有 sn',
+                    'api_response': result1
+                }
+            
+            logger.info(f"✅ 步骤1成功：获取到 sn = {sn}")
+            
+            # ==================== 步骤2: 授权码绑定新用户 ====================
+            logger.info(f"步骤2: 调用授权码绑定新用户接口 (客户名称: {customer_name})")
+            
+            bind_customer_url = f'{BITANSWER_API_BASE_URL}/e3/api/sns/{sn}/customers'
+            bind_params = [{
+                'name': customer_name
+            }]
+            
+            logger.info(f"请求参数: {json.dumps(bind_params, ensure_ascii=False, indent=2)}")
+            
+            response2 = requests.post(
+                bind_customer_url,
+                json=bind_params,
+                headers=headers,
+                timeout=30
+            )
+            
+            if response2.status_code != 200:
+                return {
+                    'success': False,
+                    'error': f'步骤2失败：授权码绑定接口调用失败，状态码: {response2.status_code}',
+                    'api_response': response2.text
+                }
+            
+            result2 = response2.json()
+            logger.info(f"步骤2响应: {json.dumps(result2, ensure_ascii=False, indent=2)}")
+            
+            # 检查响应状态
+            if result2.get('status') != 0:
+                return {
+                    'success': False,
+                    'error': f'步骤2失败：API返回错误状态 {result2.get("status")}',
+                    'api_response': result2
+                }
+            
+            logger.info(f"✅ 步骤2成功：授权码已绑定 MAC 地址")
+            
+            # ==================== 步骤3: 制作license ====================
+            logger.info(f"步骤3: 调用制作license接口 (MAC: {mac_address})")
+            
+            update_code_url = f'{BITANSWER_API_BASE_URL}/e3/api/sns/{sn}/update_code'
+            update_params = {
+                'mac': mac_address
+            }
+            
+            logger.info(f"请求参数: {json.dumps(update_params, ensure_ascii=False, indent=2)}")
+            
+            response3 = requests.post(
+                update_code_url,
+                json=update_params,
+                headers=headers,
+                timeout=30
+            )
+            
+            if response3.status_code != 200:
+                return {
+                    'success': False,
+                    'error': f'步骤3失败：制作license接口调用失败，状态码: {response3.status_code}',
+                    'api_response': response3.text
+                }
+            
+            result3 = response3.json()
+            logger.info(f"步骤3响应: {json.dumps(result3, ensure_ascii=False, indent=2)}")
+            
+            # 检查响应状态
+            if result3.get('status') != 0:
+                return {
+                    'success': False,
+                    'error': f'步骤3失败：API返回错误状态 {result3.get("status")}',
+                    'api_response': result3
+                }
+            
+            # 提取 code
+            data3 = result3.get('data', {})
+            items3 = data3.get('items', [])
+            if not items3:
+                return {
+                    'success': False,
+                    'error': '步骤3失败：API返回数据中没有 items',
+                    'api_response': result3
+                }
+            
+            code = items3[0].get('code')
+            if not code:
+                return {
+                    'success': False,
+                    'error': '步骤3失败：API返回数据中没有 code',
+                    'api_response': result3
+                }
+            
+            logger.info(f"✅ 步骤3成功：获取到 code（长度: {len(code)}）")
+            
+            # ==================== 步骤4: 将 code 写入 .upd 文件 ====================
+            logger.info(f"步骤4: 将 code 写入 .upd 文件")
+            
+            # 构建license文件路径
+            license_dir = os.path.join(MEDIA_ROOT, 'license', 'bitanswer')
+            if not os.path.exists(license_dir):
+                os.makedirs(license_dir)
+            
+            # 文件名格式：{序列号}_{产品名称}_{申请ID}.upd
+            serial_number = instance.serial_number or 'unknown'
+            file_name = f'{serial_number}_{product}_{instance.id}.upd'
+            license_file = os.path.join(license_dir, file_name)
+            relative_path = os.path.join('license', 'bitanswer', file_name)
+            
+            # 格式化 XML 内容（添加缩进和换行）
+            try:
+                import xml.dom.minidom
+                from io import StringIO
+                
+                # 解析 XML
+                dom = xml.dom.minidom.parseString(code)
+                
+                # 格式化输出（使用 pretty print）
+                formatted_xml = dom.toprettyxml(indent='  ', encoding='UTF-8')
+                
+                # toprettyxml 返回的是 bytes，需要解码为字符串
+                if isinstance(formatted_xml, bytes):
+                    formatted_xml = formatted_xml.decode('utf-8')
+                
+                # 【优化】移除 XML 声明行（toprettyxml 会自动添加 <?xml version="1.0" encoding="UTF-8"?>）
+                # 原始 code 中没有这个声明，所以需要移除以保持格式一致
+                lines = formatted_xml.strip().split('\n')
+                if lines and lines[0].startswith('<?xml'):
+                    # 移除第一行（XML 声明）
+                    formatted_xml = '\n'.join(lines[1:]).strip()
+                else:
+                    formatted_xml = formatted_xml.strip()
+                
+                logger.info(f"XML 格式化成功，原始长度: {len(code)}, 格式化后长度: {len(formatted_xml)}")
+            except Exception as e:
+                logger.warning(f"XML 格式化失败，使用原始内容: {str(e)}")
+                formatted_xml = code
+            
+            # 保存格式化后的 code 到文件
+            with open(license_file, 'w', encoding='utf-8') as f:
+                f.write(formatted_xml)
+            
+            logger.info(f"✅ 步骤4成功：License文件已保存到 {license_file}")
+            
+            # ==================== 步骤5: 上传到远程服务器 ====================
+            logger.info(f"步骤5: 上传 License 文件到远程服务器")
+            
+            try:
+                upload_result = _upload_bitanswer_license_to_remote(license_file, file_name)
+                
+                if upload_result['success']:
+                    logger.info(f"✅ 步骤5成功：{upload_result['message']}")
+                    remote_path = upload_result['remote_path']
+                else:
+                    logger.warning(f"⚠️ 步骤5失败：{upload_result.get('error')}")
+                    remote_path = None
+            except Exception as e:
+                logger.error(f"步骤5异常：{str(e)}")
+                remote_path = None
+            
+            logger.info(f"🎉 Bitanswer License 生成流程全部完成！")
+            
+            result = {
+                'success': True,
+                'file_name': file_name,
+                'file_relative_path': relative_path,
+                'directory': license_dir,
+                'full_path': license_file,
+                'vendor': 'Bitanswer',
+                'version': '3',  # 从 code 中的 <version>3</version> 提取
+                'license_id': f'BA-{instance.id}',
+                'sn': sn,
+                'message': 'Bitanswer License制作成功',
+                'remote_path': remote_path,  # 远程服务器上的文件路径
+                'api_responses': {
+                    'step1_generate_sn': result1,
+                    'step2_bind_customer': result2,
+                    'step3_update_code': result3
+                }
+            }
+            
             return result
+            
         except Exception as e:
-            logger.error(f"Bitanswer License制作失败: {str(e)}")
+            logger.error(f"Bitanswer License制作失败: {str(e)}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e)
             }
+
+    @action(methods=['get'], detail=False)
+    def dashboard_statistics(self, request):
+        """
+        Dashboard 统计分析接口
+        返回：产品申请分布、Feature申请分布、客户申请分布
+        """
+        from django.db.models import Count, Q
+        from collections import defaultdict
+
+        # 1. 产品申请分布统计（按产品分组统计申请数量）
+        product_stats = LicenseApplication.objects.values('product').distinct().annotate(
+            count=Count('id')
+        ).order_by('-count')
+
+        # 2. Feature 申请分布统计（解析 feature JSON 字段和 quantity 字段）
+        feature_stats_dict = defaultdict(int)
+        total_feature_count = 0  # 所有 Feature 的总数（包括重复）
+        applications = LicenseApplication.objects.filter(
+            feature__isnull=False
+        ).exclude(feature=[])
+
+        for app in applications:
+            # if app.feature:
+            #     # feature 是 JSON 数组，如 ["Feature1", "Feature2"]
+            #     if isinstance(app.feature, list):
+            #         for feat in app.feature:
+            #             if feat:
+            #                 feature_stats_dict[feat] += 1
+            #                 total_feature_count += 1
+            #     elif isinstance(app.feature, str):
+            #         # 如果是字符串，直接计数
+            #         feature_stats_dict[app.feature] += 1
+            #         total_feature_count += 1
+            
+            # 同时统计 quantity 字段中的 feature 数量
+            if app.quantity and isinstance(app.quantity, dict):
+                # 判断是否为 GloryEX 组产品
+                is_gloryex_group = app.product == 'GloryEX'
+                
+                if is_gloryex_group:
+                    # GloryEX 组产品：quantity 是嵌套结构 {'GloryEX': {...}, 'GloryEX3D': {...}}
+                    for product_name, product_quantity in app.quantity.items():
+                        if isinstance(product_quantity, dict):
+                            for feat, qty in product_quantity.items():
+                                if feat:
+                                    feature_stats_dict[feat] += 1
+                                    total_feature_count += 1
+                else:
+                    # 非 GloryEX 组产品：quantity 可能是扁平结构或嵌套结构
+                    for feat, qty in app.quantity.items():
+                        if feat:
+                            feature_stats_dict[feat] += 1
+                            total_feature_count += 1
+
+        # 转换为列表并按数量排序
+        feature_stats = [
+            {'feature': feat, 'count': count}
+            for feat, count in sorted(feature_stats_dict.items(), key=lambda x: x[1], reverse=True)
+        ]
+
+        # 3. 客户申请分布统计（按客户名称分组）
+        customer_stats = LicenseApplication.objects.values('customer_name').distinct().annotate(
+            count=Count('id')
+        ).order_by('-count')
+
+        # 4. 按 License 类型统计
+        license_type_stats = LicenseApplication.objects.values('application_type').annotate(
+            count=Count('id')
+        )
+
+        # 5. 按状态统计
+        status_stats = LicenseApplication.objects.values('status').annotate(
+            count=Count('id')
+        )
+
+        # 6. 总体统计
+        total_applications = LicenseApplication.objects.values('applicant').distinct().count()
+
+        return SuccessResponse(data={
+            'product_stats': list(product_stats),
+            'feature_stats': feature_stats,  # 返回所有 Feature 统计数据
+            'customer_stats': list(customer_stats),  # 返回所有客户统计数据
+            'license_type_stats': list(license_type_stats),
+            'status_stats': list(status_stats),
+            'total_applications': total_applications,
+            'total_feature_count': total_feature_count,  # 所有 Feature 的总数（包括重复）
+            'unique_feature_count': len(feature_stats)  # 去重后的 Feature 种类数
+        })
 
 
 class LicenseRecordViewSet(CustomModelViewSet):
@@ -2122,70 +2717,6 @@ class LicenseRecordViewSet(CustomModelViewSet):
             'expired': expired,
             'efficient': efficient,
             'total': LicenseRecord.objects.count()
-        })
-    
-    @action(methods=['get'], detail=False)
-    def dashboard_statistics(self, request):
-        """
-        Dashboard 统计分析接口
-        返回：产品申请分布、Feature申请分布、客户申请分布
-        """
-        from django.db.models import Count, Q
-        from collections import defaultdict
-        
-        # 1. 产品申请分布统计（按产品分组统计申请数量）
-        product_stats = LicenseApplication.objects.values('product').annotate(
-            count=Count('id')
-        ).order_by('-count')
-        
-        # 2. Feature 申请分布统计（解析 feature JSON 字段）
-        feature_stats_dict = defaultdict(int)
-        applications = LicenseApplication.objects.filter(
-            feature__isnull=False
-        ).exclude(feature=[])
-        
-        for app in applications:
-            if app.feature:
-                # feature 是 JSON 数组，如 ["Feature1", "Feature2"]
-                if isinstance(app.feature, list):
-                    for feat in app.feature:
-                        if feat:
-                            feature_stats_dict[feat] += 1
-                elif isinstance(app.feature, str):
-                    # 如果是字符串，直接计数
-                    feature_stats_dict[app.feature] += 1
-        
-        # 转换为列表并按数量排序
-        feature_stats = [
-            {'feature': feat, 'count': count}
-            for feat, count in sorted(feature_stats_dict.items(), key=lambda x: x[1], reverse=True)
-        ]
-        
-        # 3. 客户申请分布统计（按客户名称分组）
-        customer_stats = LicenseApplication.objects.values('customer_name').annotate(
-            count=Count('id')
-        ).order_by('-count')
-        
-        # 4. 按 License 类型统计
-        license_type_stats = LicenseApplication.objects.values('application_type').annotate(
-            count=Count('id')
-        )
-        
-        # 5. 按状态统计
-        status_stats = LicenseApplication.objects.values('status').annotate(
-            count=Count('id')
-        )
-        
-        # 6. 总体统计
-        total_applications = LicenseApplication.objects.count()
-        
-        return SuccessResponse(data={
-            'product_stats': list(product_stats),
-            'feature_stats': feature_stats[:20],  # 只返回前20个热门Feature
-            'customer_stats': list(customer_stats)[:15],  # 只返回前15个客户
-            'license_type_stats': list(license_type_stats),
-            'status_stats': list(status_stats),
-            'total_applications': total_applications
         })
 
 

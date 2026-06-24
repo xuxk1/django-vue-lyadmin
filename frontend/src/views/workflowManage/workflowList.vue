@@ -20,6 +20,9 @@
                         <el-option label="已撤回" :value="4"></el-option>
                     </el-select>
                 </el-form-item>
+                <el-form-item label="筛选：">
+                    <el-checkbox v-model="formInline.show_only_pending" @change="search">只显示有待审批任务</el-checkbox>
+                </el-form-item>
                 <el-form-item label="">
                     <el-button @click="search" type="primary" icon="Search" v-show="hasPermission(this.$route.name,'Search')">查询</el-button>
                 </el-form-item>
@@ -57,7 +60,7 @@
                 </el-table-column>
                 <el-table-column min-width="100" prop="current_step" label="当前步骤" align="center">
                     <template #default="scope">
-                        <span>{{ scope.row.current_step }}/{{ scope.row.total_steps }}</span>
+                        <span>{{ getCurrentStepNumber(scope.row) }}/{{ scope.row.total_steps }}</span>
                     </template>
                 </el-table-column>
                 <el-table-column min-width="150" prop="create_datetime" label="创建时间"></el-table-column>
@@ -75,8 +78,8 @@
                     <template #default="scope">
                         <!-- 发起按钮：只有草稿状态(status=0)或已撤回状态(status=4)且是申请人时才显示 -->
                         <span class="table-operate-btn" @click="handleInitiate(scope.row)" v-show="hasPermission(this.$route.name,'Initiate')" v-if="(scope.row.status==0 || scope.row.status==4) && scope.row.applicant==currentUserId">发起</span>
-                        <!-- 审批按钮：有待审批任务时显示 -->
-                        <span class="table-operate-btn" @click="handleApprove(scope.row)" v-show="hasPermission(this.$route.name,'Approval')" v-if="scope.row.my_pending_task">审批</span>
+                        <!-- 审批按钮：流程审批中(status=1)、有待审批任务、且不是申请人时显示 -->
+                        <span class="table-operate-btn" @click="handleApprove(scope.row)" v-show="hasPermission(this.$route.name,'Approval')" v-if="scope.row.status==1 && scope.row.my_pending_task && scope.row.applicant!=currentUserId">审批</span>
                         <!-- 撤回按钮：审批中(status=1)、是申请人、且当前步骤为1时显示 -->
                         <span class="table-operate-btn" @click="handleWithdraw(scope.row)" v-show="hasPermission(this.$route.name,'Withdraw')" v-if="scope.row.status==1 && scope.row.applicant==currentUserId && scope.row.current_step==1">撤回</span>
                         <!-- 删除按钮：只有草稿状态(status=0)且是申请人时显示 -->
@@ -297,7 +300,7 @@
                     <el-tag v-else-if="currentRow.status==3" type="danger">已驳回</el-tag>
                     <el-tag v-else-if="currentRow.status==4" type="">已撤回</el-tag>
                 </el-descriptions-item>
-                <el-descriptions-item label="当前步骤">{{ currentRow.current_step }}/{{ currentRow.total_steps }}</el-descriptions-item>
+                <el-descriptions-item label="当前步骤">{{ getCurrentStepNumber(currentRow) }}/{{ currentRow.total_steps }}</el-descriptions-item>
                 <el-descriptions-item label="创建时间" :span="2">{{ currentRow.create_datetime }}</el-descriptions-item>
                 <el-descriptions-item label="备注" :span="2">{{ currentRow.remark || '-' }}</el-descriptions-item>
             </el-descriptions>
@@ -311,7 +314,7 @@
                         :key="key"
                         :label="getFieldLabel(currentRow.workflow_type, key)"
                     >
-                        {{ formatFieldValue(value) }}
+                        {{ formatFieldValue(value, key) }}
                     </el-descriptions-item>
                 </el-descriptions>
             </div>
@@ -451,7 +454,8 @@
                     limit: 10,
                     workflow_type:'',
                     title:'',
-                    status:''
+                    status:'',
+                    show_only_pending: false  // 是否只显示有待审批任务的流程
                 },
                 pageparm: {
                     page: 1,
@@ -565,7 +569,8 @@
                     limit: 10,
                     workflow_type:'',
                     title:'',
-                    status:''
+                    status:'',
+                    show_only_pending: false
                 }
                 this.getData()
             },
@@ -1069,8 +1074,33 @@
                 return fieldKey
             },
             // 格式化字段值
-            formatFieldValue(value) {
+            formatFieldValue(value, fieldKey) {
                 if (value === null || value === undefined) return '-'
+                
+                // 如果有 fieldKey，尝试获取选项的 label
+                if (fieldKey && this.currentRow && this.currentRow.workflow_type) {
+                    const workflowType = this.workflowTypes.find(item => item.id === this.currentRow.workflow_type)
+                    if (workflowType && workflowType.form_schema) {
+                        try {
+                            const formSchema = typeof workflowType.form_schema === 'string' 
+                                ? JSON.parse(workflowType.form_schema) 
+                                : workflowType.form_schema
+                            const field = formSchema.find(f => f.field === fieldKey)
+                            
+                            // 如果字段有 options，将 value 转换为 label
+                            if (field && field.options) {
+                                const option = field.options.find(opt => opt.value === value)
+                                if (option) {
+                                    return option.label
+                                }
+                            }
+                        } catch (e) {
+                            console.error('解析表单配置失败:', e)
+                        }
+                    }
+                }
+                
+                // 默认返回原始值
                 if (Array.isArray(value)) {
                     return value.length > 0 ? value.join(', ') : '-'
                 }
@@ -1092,6 +1122,7 @@
                 }
                 
                 const stepLevelOrder = this.getStepLevelOrder(step)
+                const currentDisplayStep = this.calculateDisplayStep(this.currentRow)
                 
                 // 检查该步骤是否被驳回或退回
                 const isRejected = this.checkStepIsRejected(stepLevelOrder)
@@ -1110,10 +1141,8 @@
                 
                 if (hasPendingTasks) {
                     return 'warning' // 当前节点（有待审批任务）
-                } else if (stepLevelOrder < this.currentRow.current_step) {
+                } else if (stepLevelOrder < currentDisplayStep) {
                     return 'success' // 已完成
-                } else if (stepLevelOrder == this.currentRow.current_step) {
-                    return 'warning' // 当前节点
                 } else {
                     // 对于后续节点，需要检查流程是否已经终止（驳回/退回）
                     if (this.isWorkflowTerminated()) {
@@ -1135,6 +1164,9 @@
                 }
                 
                 const stepLevelOrder = this.getStepLevelOrder(step)
+                const currentDisplayStep = this.calculateDisplayStep(this.currentRow)
+                
+                console.log('getStepColor - 步骤名称:', step.step_name, 'levelOrder:', stepLevelOrder, 'currentDisplayStep:', currentDisplayStep)
                 
                 // 检查该步骤是否被驳回或退回
                 const isRejected = this.checkStepIsRejected(stepLevelOrder)
@@ -1153,10 +1185,8 @@
                 
                 if (hasPendingTasks) {
                     return '#E6A23C' // 橙色 - 当前节点（有待审批任务）
-                } else if (stepLevelOrder < this.currentRow.current_step) {
+                } else if (stepLevelOrder < currentDisplayStep) {
                     return '#67C23A' // 绿色 - 已完成
-                } else if (stepLevelOrder == this.currentRow.current_step) {
-                    return '#E6A23C' // 橙色 - 当前节点
                 } else {
                     // 对于后续节点，需要检查流程是否已经终止（驳回/退回）
                     if (this.isWorkflowTerminated()) {
@@ -1201,15 +1231,163 @@
                 return step.step_order
             },
             
+            // 计算当前应该显示的步骤数（基于审批历史）
+            calculateCurrentStep() {
+                if (!this.currentRow) return 1
+                
+                const history = this.currentRow.approval_history || []
+                
+                // 找出所有已完成的步骤（有审批通过的记录）
+                const completedSteps = new Set()
+                history.forEach(task => {
+                    if (task.approve_result === 1) {
+                        // 使用 level_order 或 step_order
+                        const stepOrder = task.level_order !== undefined && task.level_order !== null 
+                            ? Math.floor(task.level_order) 
+                            : task.step_order
+                        completedSteps.add(stepOrder)
+                    }
+                })
+                
+                // 如果有待审批任务，当前步骤就是 current_step
+                if (this.currentRow.my_pending_task) {
+                    return this.currentRow.current_step
+                }
+                
+                // 如果没有待审批任务且流程已通过，返回总步骤数
+                if (this.currentRow.status === 2) {
+                    return this.currentRow.total_steps
+                }
+                
+                // 否则，当前步骤是已完成步骤数 + 1
+                return completedSteps.size + 1
+            },
+            
+            // 计算显示用的当前步骤数（用于表格和详情页）
+            calculateDisplayStep(row) {
+                if (!row) return 1
+                
+                const history = row.approval_history || []
+                const stepsInfo = row.steps_info || []
+                
+                console.log('calculateDisplayStep - 流程编号:', row.workflow_code)
+                console.log('calculateDisplayStep - 审批历史长度:', history.length)
+                console.log('calculateDisplayStep - 步骤配置数量:', stepsInfo.length)
+                
+                // 找出所有已完成的 node_key（有审批通过的记录）
+                const completedNodeKeys = new Set()
+                history.forEach(task => {
+                    console.log('calculateDisplayStep - 审批历史任务:', {
+                        task_id: task.id,
+                        step_order: task.step_order,
+                        level_order: task.level_order,
+                        approve_result: task.approve_result,
+                        approver_name: task.approver_name,
+                        node_key: task.node_key
+                    })
+                    if (task.approve_result === 1 && task.node_key) {
+                        completedNodeKeys.add(task.node_key)
+                        console.log('calculateDisplayStep - 添加已完成node_key:', task.node_key)
+                    }
+                })
+                
+                console.log('calculateDisplayStep - 已完成node_keys:', Array.from(completedNodeKeys))
+                console.log('calculateDisplayStep - 已完成步骤数:', completedNodeKeys.size)
+                
+                // 如果没有待审批任务且流程已通过，返回总步骤数
+                if (row.status === 2) {
+                    return row.total_steps
+                }
+                
+                // 对于多级审批的情况，需要找到下一个未完成的层级
+                // 将所有 steps_info 按 level_order 排序
+                const sortedSteps = [...stepsInfo].sort((a, b) => a.level_order - b.level_order)
+                console.log('calculateDisplayStep - 排序后的步骤:', sortedSteps.map(s => ({level_order: s.level_order, step_name: s.step_name})))
+                
+                // 找到第一个有待审批任务的层级
+                for (let i = 0; i < sortedSteps.length; i++) {
+                    const step = sortedSteps[i]
+                    const levelOrder = step.level_order
+                    
+                    // 检查该层级是否有待审批任务
+                    const hasPendingTasks = this.checkHasPendingTasksAtLevel(levelOrder, row)
+                    if (hasPendingTasks) {
+                        console.log('calculateDisplayStep - 当前有待审批任务的层级:', levelOrder)
+                        return levelOrder
+                    }
+                }
+                
+                // 如果所有层级都没有待审批任务，返回最后一个层级
+                const result = sortedSteps.length > 0 ? sortedSteps[sortedSteps.length - 1].level_order : 1
+                console.log('calculateDisplayStep - 返回结果:', result)
+                return result
+            },
+            
+            // 获取当前步骤序号（用于显示，如 3/4）
+            getCurrentStepNumber(row) {
+                if (!row) return 1
+                
+                const history = row.approval_history || []
+                const stepsInfo = row.steps_info || []
+                
+                // 如果流程已通过，返回总步骤数
+                if (row.status === 2) {
+                    return row.total_steps
+                }
+                
+                // 将所有 steps_info 按 level_order 排序
+                const sortedSteps = [...stepsInfo].sort((a, b) => a.level_order - b.level_order)
+                
+                // 找到第一个有待审批任务的层级的索引
+                for (let i = 0; i < sortedSteps.length; i++) {
+                    const step = sortedSteps[i]
+                    const levelOrder = step.level_order
+                    
+                    // 检查该层级是否有待审批任务
+                    const hasPendingTasks = this.checkHasPendingTasksAtLevel(levelOrder, row)
+                    if (hasPendingTasks) {
+                        // 返回索引 + 1 作为步骤序号
+                        return i + 1
+                    }
+                }
+                
+                // 如果所有层级都没有待审批任务，返回总步骤数
+                return sortedSteps.length
+            },
+            
             // 检查指定层级是否有待审批的任务
             checkHasPendingTasks(levelOrder) {
-                if (!this.currentRow || !this.currentRow.approval_history) return false
+                if (!this.currentRow) return false
+                
+                // 关键修复：如果流程状态是"已通过"（status=2），说明没有待审批任务
+                if (this.currentRow.status === 2) {
+                    return false
+                }
+                
+                // 计算当前应该显示的步骤数（基于审批历史）
+                const currentDisplayStep = this.calculateDisplayStep(this.currentRow)
+                
+                console.log('checkHasPendingTasks - levelOrder:', levelOrder, 'currentDisplayStep:', currentDisplayStep, 'status:', this.currentRow.status)
+                
+                // 如果 levelOrder 等于 currentDisplayStep，说明是当前待审批的节点
+                return levelOrder == currentDisplayStep
+            },
+            
+            // 检查指定层级是否有待审批任务（新方法，更精确）
+            checkHasPendingTasksAtLevel(levelOrder, row) {
+                if (!row || !row.approval_history) return false
+                
+                // 关键修复：如果流程状态是"已通过"（status=2），说明没有待审批任务
+                if (row.status === 2) {
+                    return false
+                }
                 
                 // 从审批历史中查找该层级的待审批任务
-                const history = this.currentRow.approval_history || []
+                const history = row.approval_history || []
                 const pendingTasks = history.filter(task => {
                     const taskLevelOrder = task.level_order !== undefined && task.level_order !== null ? task.level_order : task.step_order
-                    return taskLevelOrder == levelOrder && task.status === 0 // status=0 表示待审批
+                    // status=0 表示待审批
+                    return taskLevelOrder == levelOrder && task.status === 0
                 })
                 
                 return pendingTasks.length > 0
@@ -1224,9 +1402,13 @@
                 const completedTasks = history.filter(task => {
                     const taskLevelOrder = task.level_order !== undefined && task.level_order !== null ? task.level_order : task.step_order
                     // approve_result=1 表示通过，approve_result=2 表示驳回，approve_result=3 表示退回
+                    // 使用精确匹配，而不是 Math.floor
                     return taskLevelOrder == levelOrder && task.approve_result === 1
                 })
                 
+                // 关键修复：对于或签模式，只要有一个任务通过就算完成
+                // 对于会签模式，需要所有任务都通过才算完成
+                // 这里简化处理：只要有通过记录，就认为该层级已完成
                 return completedTasks.length > 0
             },
             
@@ -1239,6 +1421,7 @@
                 const rejectedTasks = history.filter(task => {
                     const taskLevelOrder = task.level_order !== undefined && task.level_order !== null ? task.level_order : task.step_order
                     // approve_result=2 表示驳回，approve_result=3 表示退回
+                    // 使用精确匹配，而不是 Math.floor
                     return taskLevelOrder == levelOrder && (task.approve_result === 2 || task.approve_result === 3)
                 })
                 
