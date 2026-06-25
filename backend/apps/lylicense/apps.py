@@ -6,6 +6,9 @@ from django.conf import settings
 import threading
 import sys
 from watchdog.observers.polling import PollingObserver
+
+from config import SSH_REMOTE_TEMPLATE_DIR
+
 # 注意：不要在这里导入 views 和 models，会导致循环导入
 # 需要在函数内部延迟导入
 
@@ -582,7 +585,7 @@ class LylicenseConfig(AppConfig):
                                                         email_applicant = get_applicant_from_transformed_data(
                                                             transformed_data=transformed_data,
                                                             license_type=application.application_type,
-                                                            user_type='external',
+                                                            user_type=user_type,
                                                             field_name='ApplicantID'  # 邮件使用 ApplicantID
                                                         )
                                                         
@@ -595,7 +598,8 @@ class LylicenseConfig(AppConfig):
                                                                 owner=email_applicant,
                                                                 application=application,
                                                                 license_file_name=gen_result.get('file_name'),
-                                                                remote_dir='/TestHub/sqa/Platform/license'
+                                                                remote_dir=SSH_REMOTE_TEMPLATE_DIR,
+                                                                local_license_path=gen_result.get('full_path')  # 【新增】传入本地文件路径作为附件
                                                             )
                                                             logger.info(f"已发送 License 生成成功邮件给申请人: {email_applicant}")
                                                         else:
@@ -620,7 +624,7 @@ class LylicenseConfig(AppConfig):
                                                         email_applicant = get_applicant_from_transformed_data(
                                                             transformed_data=transformed_data,
                                                             license_type=application.application_type,
-                                                            user_type='external',
+                                                            user_type=user_type,
                                                             field_name='ApplicantID'  # 邮件使用 ApplicantID
                                                         )
                                                         
@@ -729,7 +733,7 @@ class LylicenseConfig(AppConfig):
                                                     email_applicant = get_applicant_from_transformed_data(
                                                         transformed_data=transformed_data,
                                                         license_type=application.application_type,
-                                                        user_type='external',
+                                                        user_type=user_type,
                                                         field_name='ApplicantID'
                                                     )
                                                     
@@ -742,7 +746,8 @@ class LylicenseConfig(AppConfig):
                                                             owner=email_applicant,
                                                             application=application,
                                                             license_file_name=gen_result.get('file_name'),
-                                                            remote_dir='/TestHub/sqa/Platform/license'
+                                                            remote_dir=SSH_REMOTE_TEMPLATE_DIR,
+                                                            local_license_path=gen_result.get('full_path')  # 【新增】传入本地文件路径作为附件
                                                         )
                                                         logger.info(f"已发送 Bitanswer License 生成成功邮件给申请人: {email_applicant}")
                                                     else:
@@ -767,7 +772,7 @@ class LylicenseConfig(AppConfig):
                                                     email_applicant = get_applicant_from_transformed_data(
                                                         transformed_data=transformed_data,
                                                         license_type=application.application_type,
-                                                        user_type='external',
+                                                        user_type=user_type,
                                                         field_name='ApplicantID'
                                                     )
                                                     
@@ -976,7 +981,7 @@ class LylicenseConfig(AppConfig):
                                                         email_applicant = get_applicant_from_transformed_data(
                                                             transformed_data=transformed_data,
                                                             license_type=application.application_type,
-                                                            user_type='external',
+                                                            user_type=user_type,
                                                             field_name='ApplicantID'
                                                         )
                                                         
@@ -989,7 +994,8 @@ class LylicenseConfig(AppConfig):
                                                                 owner=email_applicant,
                                                                 application=application,
                                                                 license_file_name=gen_result.get('file_name'),
-                                                                remote_dir='/TestHub/sqa/Platform/license'
+                                                                remote_dir=SSH_REMOTE_TEMPLATE_DIR,
+                                                                local_license_path=gen_result.get('full_path')  # 【新增】传入本地文件路径作为附件
                                                             )
                                                             logger.info(f"已发送 License 生成成功邮件给申请人: {email_applicant}")
                                                         else:
@@ -1014,7 +1020,7 @@ class LylicenseConfig(AppConfig):
                                                         email_applicant = get_applicant_from_transformed_data(
                                                             transformed_data=transformed_data,
                                                             license_type=application.application_type,
-                                                            user_type='external',
+                                                            user_type=user_type,
                                                             field_name='ApplicantID'  # 邮件使用 ApplicantID
                                                         )
                                                         
@@ -1123,7 +1129,7 @@ class LylicenseConfig(AppConfig):
                                                     email_applicant = get_applicant_from_transformed_data(
                                                         transformed_data=transformed_data,
                                                         license_type=application.application_type,
-                                                        user_type='external',
+                                                        user_type=user_type,
                                                         field_name='ApplicantID'
                                                     )
                                                     
@@ -1136,7 +1142,8 @@ class LylicenseConfig(AppConfig):
                                                             owner=email_applicant,
                                                             application=application,
                                                             license_file_name=gen_result.get('file_name'),
-                                                            remote_dir='/TestHub/sqa/Platform/license'
+                                                            remote_dir=SSH_REMOTE_TEMPLATE_DIR,
+                                                            local_license_path=gen_result.get('full_path')  # 【新增】传入本地文件路径作为附件
                                                         )
                                                         logger.info(f"已发送 Bitanswer License 生成成功邮件给申请人: {email_applicant}")
                                                     else:
@@ -1161,7 +1168,7 @@ class LylicenseConfig(AppConfig):
                                                     email_applicant = get_applicant_from_transformed_data(
                                                         transformed_data=transformed_data,
                                                         license_type=application.application_type,
-                                                        user_type='external',
+                                                        user_type=user_type,
                                                         field_name='ApplicantID'
                                                     )
                                                     
@@ -1324,7 +1331,7 @@ class LylicenseConfig(AppConfig):
                                                         email_applicant = get_applicant_from_transformed_data(
                                                             transformed_data=transformed_data,
                                                             license_type=application.application_type,
-                                                            user_type='external',
+                                                            user_type=user_type,
                                                             field_name='ApplicantID'  # 邮件使用 ApplicantID
                                                         )
                                                         
@@ -1337,7 +1344,8 @@ class LylicenseConfig(AppConfig):
                                                                 owner=email_applicant,
                                                                 application=application,
                                                                 license_file_name=gen_result.get('file_name'),
-                                                                remote_dir='/TestHub/sqa/Platform/license'
+                                                                remote_dir=SSH_REMOTE_TEMPLATE_DIR,
+                                                                local_license_path=gen_result.get('full_path')  # 【新增】传入本地文件路径作为附件
                                                             )
                                                             logger.info(f"已发送 License 生成成功邮件给申请人: {email_applicant}")
                                                         else:
@@ -1362,7 +1370,7 @@ class LylicenseConfig(AppConfig):
                                                         email_applicant = get_applicant_from_transformed_data(
                                                             transformed_data=transformed_data,
                                                             license_type=application.application_type,
-                                                            user_type='external',
+                                                            user_type=user_type,
                                                             field_name='ApplicantID'  # 邮件使用 ApplicantID
                                                         )
                                                         
@@ -1461,7 +1469,7 @@ class LylicenseConfig(AppConfig):
                                                     email_applicant = get_applicant_from_transformed_data(
                                                         transformed_data=transformed_data,
                                                         license_type=application.application_type,
-                                                        user_type='external',
+                                                        user_type=user_type,
                                                         field_name='ApplicantID'
                                                     )
                                                     
@@ -1474,7 +1482,8 @@ class LylicenseConfig(AppConfig):
                                                             owner=email_applicant,
                                                             application=application,
                                                             license_file_name=gen_result.get('file_name'),
-                                                            remote_dir='/TestHub/sqa/Platform/license'
+                                                            remote_dir=SSH_REMOTE_TEMPLATE_DIR,
+                                                            local_license_path=gen_result.get('full_path')  # 【新增】传入本地文件路径作为附件
                                                         )
                                                         logger.info(f"已发送 Bitanswer License 生成成功邮件给申请人: {email_applicant}")
                                                     else:
@@ -1499,7 +1508,7 @@ class LylicenseConfig(AppConfig):
                                                     email_applicant = get_applicant_from_transformed_data(
                                                         transformed_data=transformed_data,
                                                         license_type=application.application_type,
-                                                        user_type='external',
+                                                        user_type=user_type,
                                                         field_name='ApplicantID'
                                                     )
                                                     

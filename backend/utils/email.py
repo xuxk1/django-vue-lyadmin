@@ -1,11 +1,14 @@
 import json
 import logging
+import os
 import smtplib
 import time
 from abc import abstractmethod, ABC
 from datetime import datetime
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email import encoders
 
 import config
 
@@ -211,6 +214,27 @@ class EmailManager:
 
             mime_message.attach(body_part)
 
+            # 【新增】如果存在附件，则附加文件
+            if content.get('attachment'):
+                attachment_info = content['attachment']
+                attachment_path = attachment_info.get('path')
+                attachment_filename = attachment_info.get('filename', os.path.basename(attachment_path))
+                
+                if attachment_path and os.path.exists(attachment_path):
+                    try:
+                        with open(attachment_path, 'rb') as f:
+                            attachment = MIMEBase('application', 'octet-stream')
+                            attachment.set_payload(f.read())
+                        encoders.encode_base64(attachment)
+                        attachment.add_header(
+                            'Content-Disposition',
+                            f'attachment; filename="{attachment_filename}"'
+                        )
+                        mime_message.attach(attachment)
+                        logging.info(f"已附加 License 文件: {attachment_filename}")
+                    except Exception as e:
+                        logging.error(f"附加文件失败: {str(e)}, 文件路径: {attachment_path}")
+
             retry_count = 0
             while retry_count < self.max_retries:
                 try:
@@ -273,7 +297,7 @@ class EmailManager:
         messages.append(message)
         self.send_email(messages)
 
-    def license_generated_send_email(self, owner, application, license_file_name, remote_dir='/TestHub/sqa/Platform/license'):
+    def license_generated_send_email(self, owner, application, license_file_name, remote_dir=config.SSH_REMOTE_TEMPLATE_DIR, local_license_path=None):
         """
         发送 License 制作成功通知邮件
         
@@ -282,9 +306,10 @@ class EmailManager:
             application: LicenseApplication 实例
             license_file_name: License 文件名
             remote_dir: 远程存放目录
+            local_license_path: 本地 License 文件路径（用于附件）
         """
         messages = []
-        message = LicenseGeneratedMessage(owner, application, license_file_name, remote_dir)
+        message = LicenseGeneratedMessage(owner, application, license_file_name, remote_dir, local_license_path)
         messages.append(message)
         self.send_email(messages)
 
@@ -497,11 +522,12 @@ class LicenseExpiringSoonMessage(EmailMessage):
 class LicenseGeneratedMessage(EmailMessage):
     """License 制作成功通知邮件"""
     
-    def __init__(self, owner, application, license_file_name, remote_dir='/TestHub/sqa/Platform/license'):
+    def __init__(self, owner, application, license_file_name, remote_dir=config.SSH_REMOTE_TEMPLATE_DIR, local_license_path=None):
         self.owner = owner
         self.application = application
         self.license_file_name = license_file_name
         self.remote_dir = remote_dir
+        self.local_license_path = local_license_path  # 本地 License 文件路径（用于附件）
         super().__init__(self.owner, '')
         self.set_RC_email()
         self.set_Cc_email()
@@ -522,6 +548,17 @@ class LicenseGeneratedMessage(EmailMessage):
             recip_addr.append(name + '@phlexing.com')
         self.recipient = ', '.join(recip_addr)  # 使用逗号分隔多个邮箱
         return
+
+    def get_email_content(self):
+        """重写以支持附件"""
+        content = super().get_email_content()
+        # 添加附件信息（如果存在本地文件路径）
+        if self.local_license_path and os.path.exists(self.local_license_path):
+            content['attachment'] = {
+                'path': self.local_license_path,
+                'filename': self.license_file_name
+            }
+        return content
 
     def _generate_subject(self):
         return f"License 制作成功通知 - {self.application.product}"
@@ -755,34 +792,34 @@ class LicenseGeneratedMessage(EmailMessage):
                     feature_list += f"  - {feat} (授权数量: {quantity})\n"
         
         text = f"""
-License 文件制作成功
-
-【License 文件信息】
-产品名称：{self.application.product}
-客户名称：{self.application.customer_name}
-序列号：{self.application.serial_number}
-生效时间：{start_time_str}
-过期时间：{end_time_str}
-
-【文件存放位置】
-License 文件已存放在以下目录：
-{file_path}
-
-提示：请前往上述路径找到文件 {self.license_file_name} 并下载
-
-【授权特性】
-{feature_list if feature_list else '无特性信息'}
-
-【申请信息】
-申请人：{self.application.applicant}
-申请类型：{self.get_application_type_display()}
-MAC 地址：{self.application.mac_address}
-主机名：{self.application.hostname}
-
-此邮件为系统自动发送，请勿直接回复。
-发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-如有问题，请联系系统管理员。
-        """
+                License 文件制作成功
+                
+                【License 文件信息】
+                产品名称：{self.application.product}
+                客户名称：{self.application.customer_name}
+                序列号：{self.application.serial_number}
+                生效时间：{start_time_str}
+                过期时间：{end_time_str}
+                
+                【文件存放位置】
+                License 文件已存放在以下目录：
+                {file_path}
+                
+                提示：请前往上述路径找到文件 {self.license_file_name} 并下载
+                
+                【授权特性】
+                {feature_list if feature_list else '无特性信息'}
+                
+                【申请信息】
+                申请人：{self.application.applicant}
+                申请类型：{self.get_application_type_display()}
+                MAC 地址：{self.application.mac_address}
+                主机名：{self.application.hostname}
+                
+                此邮件为系统自动发送，请勿直接回复。
+                发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                如有问题，请联系系统管理员。
+            """
         return text
 
     def get_application_type_display(self):
@@ -957,25 +994,25 @@ class LicenseFailedMessage(EmailMessage):
         end_time_str = self.application.end_time.strftime('%Y-%m-%d') if self.application.end_time else 'N/A'
         
         text = f"""
-License 文件制作失败
-
-【申请信息】
-产品名称：{self.application.product}
-客户名称：{self.application.customer_name}
-序列号：{self.application.serial_number}
-生效时间：{start_time_str}
-过期时间：{end_time_str}
-
-【失败原因】
-{self.error_message}
-
-【建议】
-- 请检查申请信息是否完整、准确
-- 如问题持续存在，请联系系统管理员
-- 您可以尝试重新提交申请
-
-此邮件为系统自动发送，请勿直接回复。
-发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-如有问题，请联系系统管理员。
+        License 文件制作失败
+        
+        【申请信息】
+        产品名称：{self.application.product}
+        客户名称：{self.application.customer_name}
+        序列号：{self.application.serial_number}
+        生效时间：{start_time_str}
+        过期时间：{end_time_str}
+        
+        【失败原因】
+        {self.error_message}
+        
+        【建议】
+        - 请检查申请信息是否完整、准确
+        - 如问题持续存在，请联系系统管理员
+        - 您可以尝试重新提交申请
+        
+        此邮件为系统自动发送，请勿直接回复。
+        发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        如有问题，请联系系统管理员。
         """
         return text

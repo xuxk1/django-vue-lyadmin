@@ -1951,7 +1951,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                             owner=email_applicant,
                             application=instance,
                             license_file_name=result.get('file_name'),
-                            remote_dir='/TestHub/sqa/Platform/license'
+                            remote_dir=config.SSH_REMOTE_TEMPLATE_DIR
                         )
                         logger.info(f"已发送 License 生成成功邮件给申请人: {email_applicant}")
                     else:
