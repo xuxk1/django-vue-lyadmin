@@ -203,3 +203,5 @@ ALIPAY_PUBLIC_KEY_PATH = os.path.join(BASE_DIR, 'key', 'alipay_public_key.pem')
 
 BITANSWER_API_BASE_URL = 'http://172.16.30.24:80'  # Bitanswer API基础地址
 BITANSWER_BITKEY = 'your-bitkey-here'  # Bitanswer API的bitkey，固定值
+BITANSWER_TEMPLATE_NAME = 'test_api'
+BITANSWER_BUSINESS_NAME = 'test_linux'

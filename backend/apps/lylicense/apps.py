@@ -46,7 +46,7 @@ class LylicenseConfig(AppConfig):
             if 'runserver' in sys.argv or 'runserver_plus' in sys.argv:
 
                 from apps.lylicense.file_watcher import LicenseFileHandler
-                watch_dir = os.path.join(settings.JSON_FILE_PATH, 'json_file')
+                watch_dir = os.path.join(settings.JSON_FILE_PATH)
                 
                 # 确保目录存在
                 if not os.path.exists(watch_dir):
@@ -139,7 +139,7 @@ class LylicenseConfig(AppConfig):
                         # 在最外层提取并处理MAC地址和Hostname
                         mac_address = transformed_data.get('MacAddress', '')
                         if mac_address:
-                            mac_address = mac_address.upper()
+                            mac_address = mac_address.replace('-', '').replace(':', '')
                         hostname = transformed_data.get('Hostname', '')
 
                         logger.info(

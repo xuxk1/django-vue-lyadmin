@@ -1102,7 +1102,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             
             return SuccessResponse(data={
                 'is_running': is_running,
-                'watch_dir': os.path.join(settings.JSON_FILE_PATH, 'json_file') if is_running else None
+                'watch_dir': os.path.join(settings.JSON_FILE_PATH) if is_running else None
             })
             
         except Exception as e:
@@ -1121,7 +1121,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             from watchdog.observers.polling import PollingObserver
             
             # 监听目录
-            watch_dir = os.path.join(settings.JSON_FILE_PATH, 'json_file')
+            watch_dir = os.path.join(settings.JSON_FILE_PATH)
             logger.info(f"准备启动文件监听器，监听目录: {watch_dir}")
             
             # 确保目录存在
@@ -2209,10 +2209,10 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     'productName': product  # 产品名
                 },
                 'template': {
-                    'name': 'test_api'  # 模版名，可根据实际情况调整
+                    'name': config.BITANSWER_TEMPLATE_NAME  # 模版名，可根据实际情况调整
                 },
                 'business': {
-                    'name': 'test'  # 业务名，可根据实际情况调整
+                    'name': config.BITANSWER_BUSINESS_NAME  # 业务名，可根据实际情况调整
                 },
                 'usersNumber': total_users_number,  # 总授权数量（所有feature的数量之和）
                 'startDate': start_time.strftime('%Y-%m-%d') if start_time else None,
@@ -2811,7 +2811,7 @@ def _generate_flexnet_template_file(serial_number, mac_address, hostname, produc
         
         # 第1行：SERVER <hostname> <mac_address_without_colons> 55555
         # mac_address 需要去除冒号
-        mac_clean = mac_address.replace(':', '').replace('-', '').upper() if mac_address else 'UNKNOWN'
+        mac_clean = mac_address.replace(':', '').replace('-', '') if mac_address else 'UNKNOWN'
         server_line = f"SERVER {hostname or 'UNKNOWN'} {mac_clean} 55555"
         lines.append(server_line)
         
