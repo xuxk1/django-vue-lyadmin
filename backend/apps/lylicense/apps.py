@@ -383,6 +383,13 @@ class LylicenseConfig(AppConfig):
                                 # 处理MAC地址：在最外层已经处理过了，直接使用
                                 # mac_address 变量已经在上面提取并处理
                                 
+                                # 【关键修复】为 GloryEX 组过滤出专属的 user_info_list
+                                gloryex_user_info_list = [
+                                    ui for ui in user_info_list 
+                                    if ui.get('Product') in gloryex_group_products
+                                ]
+                                logger.info(f"GloryEX 组专属 user_info_list 长度: {len(gloryex_user_info_list)}")
+                                
                                 # 检查该产品的申请记录是否已存在
                                 if LicenseApplication.objects.filter(file_hash=file_hash, product='GloryEX').exists():
                                     logger.info(f'GloryEX产品申请记录已存在（文件哈希: {file_hash}），跳过创建')
@@ -400,6 +407,10 @@ class LylicenseConfig(AppConfig):
                                         logger.warning(f"提取申请人账号失败: {str(e)}")
                                     
                                     # 创建GloryEX组的申请记录
+                                    logger.info(f"[DEBUG] 准备创建申请记录，gloryex_user_info_list 长度: {len(gloryex_user_info_list)}")
+                                    if gloryex_user_info_list:
+                                        logger.info(f"[DEBUG] gloryex_user_info_list 内容: {json.dumps(gloryex_user_info_list, ensure_ascii=False)[:500]}...")
+                                    
                                     application = LicenseApplication.objects.create(
                                         applicant=applicant or '未知申请人',
                                         applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
@@ -415,11 +426,16 @@ class LylicenseConfig(AppConfig):
                                         end_time=max_end_time,
                                         quantity=gloryex_features if gloryex_features else {},
                                         json_data=json_data,
+                                        user_info_list=gloryex_user_info_list,  # 【关键】使用过滤后的纯净数据
                                         status=3,
                                         max_retry_count=3
                                     )
                                     created_applications.append(application.id)
                                     logger.info(f"创建GloryEX组申请记录成功，ID: {application.id}，包含产品: {', '.join([p for p in gloryex_group_products if p in product_features])}")
+                                    
+                                    # 重新从数据库加载以确认 user_info_list 已保存
+                                    application.refresh_from_db()
+                                    logger.info(f"[DEBUG] 从数据库重新加载后，user_info_list 长度: {len(application.user_info_list) if application.user_info_list else 0}")
                                     
                                     # 如果是 FlexNet 类型，立即生成 license 文件
                                     if license_type == 'flexnet':
@@ -580,6 +596,12 @@ class LylicenseConfig(AppConfig):
                                                     try:
                                                         from utils.email import EmailManager
                                                         from apps.lylicense.views import get_applicant_from_transformed_data
+                                                        
+                                                        # 调试：检查 application.user_info_list
+                                                        logger.info(f"[DEBUG] 发送邮件前，application.id={application.id}")
+                                                        logger.info(f"[DEBUG] application.user_info_list 长度: {len(application.user_info_list) if application.user_info_list else 0}")
+                                                        if application.user_info_list:
+                                                            logger.info(f"[DEBUG] application.user_info_list 内容: {json.dumps(application.user_info_list, ensure_ascii=False)[:500]}...")
                                                         
                                                         # 发送邮件时使用 ApplicantID（真实的账号）
                                                         email_applicant = get_applicant_from_transformed_data(
@@ -832,6 +854,13 @@ class LylicenseConfig(AppConfig):
                                     
                                     processed_products.add(group_product)
                                 
+                                # 【关键修复】为 GloryBolt 组过滤出专属的 user_info_list
+                                glorybolt_user_info_list = [
+                                    ui for ui in user_info_list 
+                                    if ui.get('Product') in glorybolt_group_products
+                                ]
+                                logger.info(f"GloryBolt 组专属 user_info_list 长度: {len(glorybolt_user_info_list)}")
+                                
                                 # 检查该产品的申请记录是否已存在
                                 if LicenseApplication.objects.filter(file_hash=file_hash, product='GloryBolt').exists():
                                     logger.info(f'GloryBolt产品申请记录已存在（文件哈希: {file_hash}），跳过创建')
@@ -864,6 +893,7 @@ class LylicenseConfig(AppConfig):
                                         end_time=max_end_time,
                                         quantity=glorybolt_features if glorybolt_features else {},
                                         json_data=json_data,
+                                        user_info_list=glorybolt_user_info_list,  # 【关键】使用过滤后的纯净数据
                                         status=3,
                                         max_retry_count=3
                                     )
@@ -1210,6 +1240,10 @@ class LylicenseConfig(AppConfig):
                                 # 处理MAC地址：在最外层已经处理过了，直接使用
                                 # mac_address 变量已经在上面提取并处理
                                 
+                                # 【关键修复】为单个产品过滤出专属的 user_info_list（只包含当前产品）
+                                single_product_user_info_list = [user_info]  # 单个产品只需要自己的数据
+                                logger.info(f"产品 {product} 专属 user_info_list 长度: {len(single_product_user_info_list)}")
+                                
                                 # 检查该产品的申请记录是否已存在
                                 if LicenseApplication.objects.filter(file_hash=file_hash, product=product).exists():
                                     logger.info(f'产品{product}申请记录已存在（文件哈希: {file_hash}），跳过创建')
@@ -1241,6 +1275,7 @@ class LylicenseConfig(AppConfig):
                                         end_time=end_time,
                                         quantity=product_feats if product_feats else {},
                                         json_data=json_data,
+                                        user_info_list=single_product_user_info_list,  # 【关键】使用过滤后的纯净数据
                                         status=3,
                                         max_retry_count=3
                                     )

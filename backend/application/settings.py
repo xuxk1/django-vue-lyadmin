@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     'apps.lycrontab',
     'apps.lylicense',
     'apps.lyworkflow',
+    'django_crontab',  # 定时任务
 ]
 
 MIDDLEWARE = [
@@ -128,6 +129,7 @@ DATABASES = {
         'PORT': DATABASE_PORT,
         'CONN_MAX_AGE':DATABASE_CONN_MAX_AGE,
         'OPTIONS': {
+                    'ssl': DATABASE_SSL,
                     'charset':DATABASE_CHARSET,
                     'init_command': 'SET default_storage_engine=INNODB', #innodb才支持事务
                 }
@@ -536,3 +538,25 @@ API_MODEL_MAP = {
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 JSON_FILE_PATH = r"D:\eladmin"
+
+# ================================================= #
+# ******************** django-crontab配置 ******************** #
+# ================================================= #
+CRONJOBS = [
+    # 每天凌晨2点执行License过期检查和邮件提醒
+    ('0 2 * * *', 'apps.lylicense.management.commands.check_license_expiration.Command', '', {}),
+    
+    # 或者每小时检查一次（开发环境测试用）
+    # ('0 * * * *', 'apps.lylicense.management.commands.check_license_expiration.Command', '', {}),
+]
+
+# Windows环境下使用绝对路径存储日志文件
+import platform
+if platform.system() == 'Windows':
+    CRON_LOG_DIR = os.path.join(BASE_DIR, 'logs')
+    if not os.path.exists(CRON_LOG_DIR):
+        os.makedirs(CRON_LOG_DIR)
+    # Windows下不使用日志重定向，由命令内部处理
+    CRONJOBS = [
+        ('0 2 * * *', 'apps.lylicense.management.commands.check_license_expiration.Command', ''),
+    ]

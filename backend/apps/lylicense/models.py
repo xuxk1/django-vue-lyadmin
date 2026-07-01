@@ -46,6 +46,9 @@ class LicenseApplication(BaseModel):
     # JSON原始数据
     json_data = models.JSONField(null=True, blank=True, verbose_name="JSON原始数据")
     
+    # 解析后的用户信息列表（存储转换后的 UserInfo 数据）
+    user_info_list = models.JSONField(null=True, blank=True, verbose_name="用户信息列表", help_text="存储 transform_json_with_mapping() 转换后的 UserInfo 数组，用于快速查询和展示")
+    
     # 文件唯一标识（用于防止重复处理）
     file_hash = models.CharField(max_length=64, null=True, blank=True, verbose_name="文件哈希值", help_text="文件内容的MD5哈希，用于防止相同文件重复处理")
     

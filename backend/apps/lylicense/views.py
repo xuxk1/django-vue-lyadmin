@@ -1,6 +1,10 @@
 import os
 import json
 import logging
+from datetime import datetime, timedelta, date
+        from utils.email import EmailManager
+        import threading
+
 import paramiko
 from django.utils import timezone
 from django.conf import settings
@@ -706,7 +710,7 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
 
     mac_address = transformed_data.get('MacAddress', '')
     if mac_address:
-        mac_address = mac_address.upper()
+        mac_address = mac_address.replace('-', '').replace(':', '')
     hostname = transformed_data.get('Hostname', '')
 
     # 从 transformed_data 中提取 UserInfo 的基础信息（全局的，作为 fallback）
@@ -787,12 +791,78 @@ class LicenseApplicationViewSet(CustomModelViewSet):
     queryset = LicenseApplication.objects.all()
     serializer_class = LicenseApplicationSerializer
     create_serializer_class = LicenseApplicationCreateSerializer
-    filterset_fields = ['applicant', 'application_type', 'customer_name', 'status']
-    search_fields = ['applicant', 'customer_name', 'mac_address', 'feature']
+    filterset_fields = ['applicant', 'application_type', 'customer_name', 'status', 'serial_number']
+    search_fields = ['applicant', 'customer_name', 'mac_address', 'feature', 'serial_number']
     ordering_fields = ['create_datetime']
     ordering = '-create_datetime'
     # License模块不需要数据权限过滤
     extra_filter_backends = []
+    
+    def get_queryset(self):
+        """重写查询集，支持产品名称筛选（包括 user_info_list 中的产品）"""
+        queryset = super().get_queryset()
+        # 兼容前端两种参数名：product 和 product_name
+        product_name = self.request.query_params.get('product') or self.request.query_params.get('product_name')
+        if product_name:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[产品查询-get_queryset] 搜索关键词: {product_name}")
+            
+            # 由于 MySQL 的 JSONField __contains 查询不可靠，我们不在数据库层面过滤
+            # 而是返回所有记录，在 list() 方法中进行 Python 层面的精确过滤
+            logger.info(f"[产品查询-get_queryset] 跳过数据库过滤，返回所有记录")
+        return queryset
+    
+    def list(self, request, *args, **kwargs):
+        """重写列表方法，对产品名称进行精确过滤"""
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # 如果有产品名称参数，进行精确过滤（兼容 product 和 product_name）
+        product_name = self.request.query_params.get('product') or self.request.query_params.get('product_name')
+        if product_name:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[产品查询] 搜索关键词: {product_name}")
+            
+            filtered_data = []
+            for obj in queryset:
+                # 检查是否应该包含该记录
+                should_include = False
+                
+                # 1. 检查 product 字段
+                if obj.product and product_name.lower() in obj.product.lower():
+                    should_include = True
+                    logger.info(f"[产品查询] 记录ID={obj.id}, product字段匹配: '{obj.product}'")
+                
+                # 2. 检查 user_info_list 中的产品名称（独立检查，不依赖 product 字段）
+                if not should_include and obj.user_info_list and isinstance(obj.user_info_list, list):
+                    for user_info in obj.user_info_list:
+                        product_in_list = user_info.get('Product', '')
+                        if product_name.lower() in product_in_list.lower():
+                            should_include = True
+                            logger.info(f"[产品查询] 记录ID={obj.id}, user_info_list匹配: '{product_in_list}'")
+                            break
+                    else:
+                        logger.debug(f"[产品查询] 记录ID={obj.id}, user_info_list不匹配: {[u.get('Product', '') for u in obj.user_info_list]}")
+                
+                if not should_include:
+                    logger.debug(f"[产品查询] 记录ID={obj.id} 未匹配, product='{obj.product}', has_user_info_list={bool(obj.user_info_list)}")
+                
+                if should_include:
+                    filtered_data.append(obj)
+            
+            logger.info(f"[产品查询] 过滤后结果数量: {len(filtered_data)}, IDs: {[obj.id for obj in filtered_data]}")
+            
+            # 重新创建 QuerySet（用于分页）
+            queryset = LicenseApplication.objects.filter(id__in=[obj.id for obj in filtered_data])
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return SuccessResponse(data=serializer.data)
     
     @action(methods=['post'], detail=False)
     def scan_txt_files(self, request):
@@ -1290,16 +1360,19 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                             gloryex_keyword = ui.get('Keyword')
                                             break
                                     
-                                    # 生成合并的模板文件
+                                    # 【关键修复】生成合并的模板文件时，传入完整的 product_features（包含所有产品）
+                                    # 这样函数内部可以根据每个 feature 所属的产品获取对应的时间
                                     template_file_path = _generate_flexnet_template_file(
                                         serial_number=serial_number,
                                         mac_address=mac_address,
                                         hostname=hostname,
-                                        product_name='GloryEX',  # 统一使用 GloryEX 作为产品名
-                                        product_features={'GloryEX': merged_gloryex_features},  # 传入合并后的 features
+                                        product_name='GloryEX',  # 统一使用 GloryEX 作为产品名（用于文件名）
+                                        product_features=product_features,  # 传入完整的 product_features（包含所有产品）
                                         user_info_list=user_info_list,
                                         file_hash=file_hash,
-                                        keyword=gloryex_keyword
+                                        keyword=gloryex_keyword,
+                                        is_product_group=True,  # 标记为产品组合并
+                                        group_products=gloryex_group_products  # 传递组内产品名称列表
                                     )
                                     if template_file_path:
                                         flexnet_template_files['GloryEX'] = template_file_path
@@ -1309,7 +1382,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                             if p in product_features:
                                                 flexnet_template_files[p] = template_file_path  # 指向同一个文件
                             
-                            # 第三步：处理其他非 GloryEX 组的产品
+                            # 第二步：处理其他非 GloryEX 组的产品
                             for product, product_feats in product_features.items():
                                 if not product_feats:
                                     continue
@@ -1348,6 +1421,8 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     
                     # 特殊产品分组：GloryEX、GloryEX3D、GloryPolaris 合并为一个申请记录
                     gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris']
+                    # GloryBolt、GloryGrid 合并为一个申请记录
+                    glorybolt_group_products = ['GloryBolt', 'GloryGrid']
                     
                     # 按产品分组处理
                     processed_products = set()  # 已处理的产品集合
@@ -1416,6 +1491,13 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                         logger.info(f"合并后的 quantity: {gloryex_features}")
                         logger.info(f"时间范围: {min_start_time} ~ {max_end_time}")
                         
+                        # 【关键修复】为 GloryEX 组过滤出专属的 user_info_list
+                        gloryex_user_info_list = [
+                            ui for ui in user_info_list 
+                            if ui.get('Product') in gloryex_group_products
+                        ]
+                        logger.info(f"GloryEX 组专属 user_info_list 长度: {len(gloryex_user_info_list)}")
+                        
                         # 处理MAC地址：在最外层已经处理过了，直接使用
                         # mac_address 变量在第378行已经提取并处理
 
@@ -1441,7 +1523,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                             logger.info(f"  - end_time: {max_end_time}")
                             logger.info(f"  - file_hash: {file_hash}")
                             
-                            # 创建GloryEX组的申请记录
+                            # 创建GloryEX组的申请记录，使用过滤后的 user_info_list
                             application = LicenseApplication.objects.create(
                                 applicant=applicant or '未知申请人',
                                 applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
@@ -1457,6 +1539,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                 end_time=max_end_time,
                                 quantity=gloryex_features if gloryex_features else {},
                                 json_data=json_data,
+                                user_info_list=gloryex_user_info_list,  # 【关键】使用过滤后的纯净数据
                                 status=3,
                                 max_retry_count=3
                             )
@@ -1529,7 +1612,187 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                 except Exception as e:
                                     logger.error(f"生成 GloryEX组 Bitanswer License 文件异常: {str(e)}", exc_info=True)
                     
-                    # 第三步：处理其他非 GloryEX 组的产品
+                    # 第二步：检测是否存在 GloryBolt 组的产品
+                    has_glorybolt_group = False
+                    glorybolt_products_found = []
+                    for user_info in user_info_list:
+                        product = user_info.get('Product')
+                        if product and product in glorybolt_group_products:
+                            has_glorybolt_group = True
+                            glorybolt_products_found.append(product)
+                            logger.info(f"检测到 GloryBolt 组产品: {product}")
+                    
+                    logger.info(f"GloryBolt 组产品检测结果: has_glorybolt_group={has_glorybolt_group}, 找到的产品={glorybolt_products_found}")
+                    
+                    # 第三步：如果存在 GloryBolt 组产品，先合并处理
+                    if has_glorybolt_group:
+                        logger.info("开始合并处理 GloryBolt 组产品")
+                        
+                        # 合并处理GloryBolt组的所有产品
+                        glorybolt_features = {}
+                        glorybolt_feature_list = []
+                        min_start_time = None
+                        max_end_time = None
+                        
+                        for group_product in glorybolt_group_products:
+                            logger.info(f"检查是否处理产品: {group_product}")
+                            if group_product in product_features:
+                                logger.info(f"合并产品 {group_product} 的 feature: {list(product_features[group_product].keys())}")
+                                # 合并feature
+                                glorybolt_features.update(product_features[group_product])
+                                # 合并feature列表
+                                for feat in product_features[group_product].keys():
+                                    if feat not in glorybolt_feature_list:
+                                        glorybolt_feature_list.append(feat)
+                            else:
+                                logger.info(f"产品 {group_product} 不在 product_features 中，跳过")
+                            
+                            # 查找对应产品的UserInfo，获取时间
+                            for ui in user_info_list:
+                                if ui.get('Product') == group_product:
+                                    start_timestamp = ui.get('Startdate')
+                                    end_timestamp = ui.get('Expirydate')
+                                    logger.info(f"产品 {group_product} 的时间: Start={start_timestamp}, End={end_timestamp}")
+                                    
+                                    if start_timestamp and isinstance(start_timestamp, (int, float)):
+                                        from datetime import datetime
+                                        start_time = datetime.fromtimestamp(start_timestamp / 1000)
+                                        if min_start_time is None or start_time < min_start_time:
+                                            min_start_time = start_time
+                                    
+                                    if end_timestamp and isinstance(end_timestamp, (int, float)):
+                                        from datetime import datetime
+                                        end_time = datetime.fromtimestamp(end_timestamp / 1000)
+                                        if max_end_time is None or end_time > max_end_time:
+                                            max_end_time = end_time
+                                    break
+                            
+                            # 标记为已处理
+                            processed_products.add(group_product)
+                        
+                        logger.info(f"合并后的 feature 列表: {glorybolt_feature_list}")
+                        logger.info(f"合并后的 quantity: {glorybolt_features}")
+                        logger.info(f"时间范围: {min_start_time} ~ {max_end_time}")
+                        
+                        # 【关键修复】为 GloryBolt 组过滤出专属的 user_info_list
+                        glorybolt_user_info_list = [
+                            ui for ui in user_info_list 
+                            if ui.get('Product') in glorybolt_group_products
+                        ]
+                        logger.info(f"GloryBolt 组专属 user_info_list 长度: {len(glorybolt_user_info_list)}")
+                        
+                        # 提取申请人ID（用于邮件发送）
+                        applicant_id = get_applicant_from_transformed_data(
+                            transformed_data=transformed_data,
+                            license_type=license_type,
+                            user_type=user_type,
+                            field_name='ApplicantID'
+                        )
+
+                        # 检查该产品的申请记录是否已存在
+                        if LicenseApplication.objects.filter(file_hash=file_hash, product='GloryBolt').exists():
+                            logger.info(f'GloryBolt产品申请记录已存在（文件哈希: {file_hash}），跳过创建')
+                        else:
+                            logger.info(f"准备创建 GloryBolt 组合并申请记录")
+                            logger.info(f"  - applicant: {applicant or '未知申请人'}")
+                            logger.info(f"  - applicant_id: {applicant_id}")
+                            logger.info(f"  - license_type: {license_type}")
+                            logger.info(f"  - features: {glorybolt_feature_list}")
+                            logger.info(f"  - quantity: {glorybolt_features}")
+                            logger.info(f"  - start_time: {min_start_time}")
+                            logger.info(f"  - end_time: {max_end_time}")
+                            logger.info(f"  - file_hash: {file_hash}")
+                            
+                            # 创建GloryBolt组的申请记录，使用过滤后的 user_info_list
+                            application = LicenseApplication.objects.create(
+                                applicant=applicant or '未知申请人',
+                                applicant_id=applicant_id if applicant_id else None,
+                                application_type=license_type,
+                                feature=glorybolt_feature_list if glorybolt_feature_list else [],
+                                product='GloryBolt',  # 统一使用GloryBolt作为产品名
+                                serial_number=serial_number or '',
+                                file_hash=file_hash,
+                                customer_name=customer_name or '未指定客户',
+                                mac_address=mac_address,
+                                hostname=hostname or '',
+                                start_time=min_start_time,
+                                end_time=max_end_time,
+                                quantity=glorybolt_features if glorybolt_features else {},
+                                json_data=json_data,
+                                user_info_list=glorybolt_user_info_list,  # 【关键】使用过滤后的纯净数据
+                                status=3,
+                                max_retry_count=3
+                            )
+                            created_applications.append(application.id)
+                            logger.info(f"创建 GloryBolt 组合并申请记录成功，ID: {application.id}")
+                            
+                            # 检查结束时间是否即将过期（小于30天）
+                            from datetime import datetime, timedelta
+                            if max_end_time:
+                                days_until_expiry = (max_end_time - datetime.now()).days
+                                if days_until_expiry < 30:
+                                    logger.warning(f"GloryBolt 组合并 License 将在 {days_until_expiry} 天后过期 ({max_end_time})，发送提醒邮件")
+                                    try:
+                                        from utils.email import EmailManager
+                                        
+                                        # 通过映射表从转换后的数据中获取申请人账号
+                                        owner_account = get_applicant_from_transformed_data(
+                                            transformed_data, license_type, user_type
+                                        )
+                                        
+                                        if not owner_account:
+                                            logger.warning("未获取到申请人账号，使用默认值")
+                                            owner_account = config.MAIL_RECIPIENT
+                                        
+                                        # 发送即将过期提醒邮件
+                                        email_manager = EmailManager()
+                                        email_manager.license_expired_send_email(owner_account, application, max_end_time)
+                                        logger.info(f"已发送 License 即将过期提醒邮件给: {owner_account}")
+                                    except Exception as email_err:
+                                        logger.error(f"发送过期提醒邮件失败: {str(email_err)}")
+                            
+                            # 如果是 FlexNet 类型，立即生成 license 文件
+                            if license_type == 'flexnet':
+                                try:
+                                    # 获取对应的预制作模板文件路径（使用第一个产品的模板）
+                                    template_file = None
+                                    for group_product in glorybolt_group_products:
+                                        if group_product in flexnet_template_files:
+                                            template_file = flexnet_template_files[group_product]
+                                            break
+                                    
+                                    if template_file:
+                                        # 将相对路径转换为绝对路径
+                                        abs_template_file = os.path.join(MEDIA_ROOT, template_file)
+                                        gen_result = self._generate_flexnet_license(
+                                            instance=application,
+                                            json_data=json_data,
+                                            template_file_path=abs_template_file
+                                        )
+                                        if gen_result.get('success'):
+                                            logger.info(f"GloryBolt组 License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                        else:
+                                            logger.error(f"GloryBolt组 License 文件生成失败: {gen_result.get('error')}")
+                                    else:
+                                        logger.warning(f"未找到 GloryBolt 组的预制作模板文件，跳过 License 生成")
+                                except Exception as e:
+                                    logger.error(f"生成 GloryBolt组 License 文件异常: {str(e)}", exc_info=True)
+                            
+                            # 如果是 Bitanswer 类型，直接调用 API 生成 license 文件
+                            elif license_type == 'bitanswer':
+                                try:
+                                    gen_result = self._generate_bitanswer_license(
+                                        instance=application,
+                                        json_data=json_data
+                                    )
+                                    if gen_result.get('success'):
+                                        logger.info(f"GloryBolt组 Bitanswer License 文件生成成功: {gen_result.get('file_relative_path')}")
+                                    else:
+                                        logger.error(f"GloryBolt组 Bitanswer License 文件生成失败: {gen_result.get('error')}")
+                                except Exception as e:
+                                    logger.error(f"生成 GloryBolt组 Bitanswer License 文件异常: {str(e)}", exc_info=True)
+                    
+                    # 第三步：处理其他非产品组的产品
                     for user_info in user_info_list:
                         product = user_info.get('Product')
                         if not product:
@@ -1539,7 +1802,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                         
                         # 如果产品已经处理过，跳过
                         if product in processed_products:
-                            logger.info(f"产品 {product} 已在 GloryEX 组合并中处理过，跳过")
+                            logger.info(f"产品 {product} 已在产品组合并中处理过，跳过")
                             continue
                         
                         # 其他产品单独创建申请记录
@@ -1558,6 +1821,10 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                         if end_timestamp and isinstance(end_timestamp, (int, float)):
                             from datetime import datetime
                             end_time = datetime.fromtimestamp(end_timestamp / 1000)
+                        
+                        # 【关键修复】为单个产品过滤出专属的 user_info_list（只包含当前产品）
+                        single_product_user_info_list = [user_info]  # 单个产品只需要自己的数据
+                        logger.info(f"产品 {product} 专属 user_info_list 长度: {len(single_product_user_info_list)}")
                         
                         # 处理MAC地址：在最外层已经处理过了，直接使用
                         # mac_address 变量在第378行已经提取并处理
@@ -1593,6 +1860,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                 end_time=end_time,
                                 quantity=product_feats if product_feats else {},
                                 json_data=json_data,
+                                user_info_list=single_product_user_info_list,  # 【关键】使用过滤后的纯净数据
                                 status=3,
                                 max_retry_count=3
                             )
@@ -2155,6 +2423,13 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             features_list = []
             total_users_number = 0  # 总授权数量
             
+            # 【关键修复】从 instance.user_info_list 中获取 user_info_list，用于获取每个产品的时间
+            # instance 是 LicenseApplication 对象，其中保存了转换后的 user_info_list
+            user_info_list = instance.user_info_list or []
+            logger.info(f"Bitanswer: user_info_list 长度={len(user_info_list)}")
+            if user_info_list:
+                logger.info(f"Bitanswer: user_info_list 内容预览={json.dumps(user_info_list[:1], ensure_ascii=False)}")
+            
             # 从 quantity 中获取 feature 及其数量
             if isinstance(quantity, dict):
                 for feature_name, users_count in quantity.items():
@@ -2176,12 +2451,34 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                 feature_id = _get_feature_id_from_api(product, actual_feature_name)
                                                             
                                 if feature_id:
+                                    # 【关键修复】根据 feature 名称从 user_info_list 中查找其所属产品，获取对应的时间
+                                    feature_end_date = end_time.strftime('%Y-%m-%d') if end_time else None
+                                    
+                                    if user_info_list:
+                                        # 遍历 user_info_list，查找该 feature 属于哪个产品
+                                        for ui in user_info_list:
+                                            ui_product = ui.get('Product', '')
+                                            
+                                            # 检查该 feature 是否属于这个产品
+                                            # user_info_list 的结构：{'Product': 'GloryEX', 'GloryEX': {'feat1': 10, ...}}
+                                            product_features_dict = ui.get(ui_product, {})
+                                            
+                                            if actual_feature_name in product_features_dict:
+                                                # 找到了！这个 feature 属于 ui_product
+                                                ui_end_timestamp = ui.get('Expirydate', 0)
+                                                if ui_end_timestamp and isinstance(ui_end_timestamp, (int, float)):
+                                                    from datetime import datetime
+                                                    ui_end_dt = datetime.fromtimestamp(ui_end_timestamp / 1000)
+                                                    feature_end_date = ui_end_dt.strftime('%Y-%m-%d')
+                                                    logger.info(f"Feature '{actual_feature_name}' 属于产品 '{ui_product}', 使用过期时间: {feature_end_date}")
+                                                break
+                                    
                                     features_list.append({
                                         'id': feature_id, 
                                         'users': actual_users_count,
-                                        'endDate': end_time.strftime('%Y-%m-%d') if end_time else None
+                                        'endDate': feature_end_date
                                     })
-                                    logger.info(f"Feature转换(嵌套): {actual_feature_name} -> FID={feature_id}, 授权数量={actual_users_count}")
+                                    logger.info(f"Feature转换(嵌套): {actual_feature_name} -> FID={feature_id}, 授权数量={actual_users_count}, endDate={feature_end_date}")
                                 else:
                                     logger.warning(f"未找到{product}产品的feature '{actual_feature_name}' 的ID，跳过该feature")
                     elif isinstance(users_count, (int, float)):
@@ -2194,16 +2491,40 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                         feature_id = _get_feature_id_from_api(original_product, feature_name)
                                                     
                         if feature_id:
+                            # 【关键修复】根据 feature 名称从 user_info_list 中查找其所属产品，获取对应的时间
+                            feature_end_date = end_time.strftime('%Y-%m-%d') if end_time else None
+                            
+                            if user_info_list:
+                                # 遍历 user_info_list，查找该 feature 属于哪个产品
+                                for ui in user_info_list:
+                                    ui_product = ui.get('Product', '')
+                                    
+                                    # 检查该 feature 是否属于这个产品
+                                    # user_info_list 的结构：{'Product': 'GloryEX', 'GloryEX': {'feat1': 10, ...}}
+                                    product_features_dict = ui.get(ui_product, {})
+                                    
+                                    if feature_name in product_features_dict:
+                                        # 找到了！这个 feature 属于 ui_product
+                                        ui_end_timestamp = ui.get('Expirydate', 0)
+                                        if ui_end_timestamp and isinstance(ui_end_timestamp, (int, float)):
+                                            from datetime import datetime
+                                            ui_end_dt = datetime.fromtimestamp(ui_end_timestamp / 1000)
+                                            feature_end_date = ui_end_dt.strftime('%Y-%m-%d')
+                                            logger.info(f"Feature '{feature_name}' 属于产品 '{ui_product}', 使用过期时间: {feature_end_date}")
+                                        break
+                            
                             features_list.append({
                                 'id': feature_id,  
                                 'users': actual_users_count,
-                                'endDate': end_time.strftime('%Y-%m-%d') if end_time else None
+                                'endDate': feature_end_date
                             })
-                            logger.info(f"Feature转换: {feature_name} -> FID={feature_id}, 授权数量={actual_users_count}")
+                            logger.info(f"Feature转换: {feature_name} -> FID={feature_id}, 授权数量={actual_users_count}, endDate={feature_end_date}")
                         else:
                             logger.warning(f"未找到feature '{feature_name}' 的ID，跳过该feature")
             
             # 构建请求参数（按照第三方API要求的格式）
+            # 【关键修复】对于产品组，startDate 和 endDate 使用最早开始时间和最晚结束时间
+            # 但每个 feature 的 endDate 已经在上面单独设置了
             params = {
                 'product': {
                     'productName': product  # 产品名
@@ -2562,103 +2883,361 @@ class LicenseRecordViewSet(CustomModelViewSet):
     """
     queryset = LicenseRecord.objects.all()
     serializer_class = LicenseRecordSerializer
-    filterset_fields = ['license_type', 'status', 'host_id', 'vendor', 'license_id']
-    search_fields = ['license_id', 'feature', 'vendor', 'host_id', 'file_name']
+    filterset_fields = ['license_type', 'status', 'host_id']
+    search_fields = ['license_id', 'feature', 'host_id', 'file_name']
     ordering_fields = ['create_datetime', 'end_time', 'remaining_days']
     ordering = '-create_datetime'
     # License模块不需要数据权限过滤
     extra_filter_backends = []
     
+    def get_queryset(self):
+        """重写查询集，支持客户名称筛选"""
+        queryset = super().get_queryset()
+        customer_name = self.request.query_params.get('customer_name')
+        if customer_name:
+            queryset = queryset.filter(application__customer_name__icontains=customer_name)
+        return queryset
+    
     def list(self, request, *args, **kwargs):
-        """列表查询时自动更新已过期的License状态，并发送邮件提醒"""
-        from datetime import datetime, timedelta, date
-        from utils.email import EmailManager
+        """
+        列表查询时自动更新已过期的License状态，并发送邮件提醒（30天、15天、7天各提醒一次）
+        注意：主要的定时检查由 django-crontab 在每天凌晨2点执行
+              这里的检查是作为补充，确保用户刷新列表时能获取最新状态
         
+        重要优化：
+        - 过期状态更新同步执行（快速操作）
+        - 邮件发送异步执行（避免阻塞列表加载）
+        - 异常完全隔离（邮件失败不影响列表展示）
+        """        
         now = date.today()  # 使用 date 而不是 datetime，因为 end_time 是 DateField
-        expiring_threshold = now + timedelta(days=30)
+        logger.info(f"开始执行License自动检查和邮件提醒（list视图），当前日期: {now}")
         
-        # 1. 自动更新已过期的License状态
-        expired_records = LicenseRecord.objects.filter(
-            end_time__lt=now,
-            status=1  # 只更新当前状态为有效的
-        )
-        
-        expired_count = expired_records.count()
-        if expired_count > 0:
-            # 更新状态为已过期
-            expired_records.update(status=2)
-            logger.info(f"列表查询时自动更新了 {expired_count} 条已过期的 License 记录状态")
+        # 1. 【同步执行】自动更新已过期的License状态（快速操作，不阻塞）
+        try:
+            expired_records = LicenseRecord.objects.filter(
+                end_time__lt=now,
+                status=1  # 只更新当前状态为有效的
+            )
             
-            # 发送过期提醒邮件（只发送一次）
-            email_manager = EmailManager()
-            for record in expired_records:
-                # 检查是否已发送过期提醒邮件
-                extra_info = record.extra_info or {}
-                if extra_info.get('expired_email_sent', False):
-                    logger.info(f"跳过已发送过期提醒邮件的记录: {record.application.serial_number}")
-                    continue
+            expired_count = expired_records.count()
+            if expired_count > 0:
+                # 在更新前先获取需要发送邮件的记录列表（排除已发送过的）
+                expired_to_notify = []
+                for record in expired_records:
+                    extra_info = record.extra_info or {}
+                    if not extra_info.get('expired_email_sent', False):
+                        expired_to_notify.append(record)
                 
-                # 获取关联的申请记录
-                try:
+                # 更新状态为已过期
+                expired_records.update(status=2)
+                logger.info(f"列表查询时自动更新了 {expired_count} 条已过期的 License 记录状态")
+                
+                # 【异步执行】发送过期提醒邮件（不阻塞列表加载）
+                self._send_async_emails(expired_to_notify, 'expired')
+        except Exception as e:
+            logger.error(f"更新过期License状态失败: {str(e)}")
+            # 即使更新失败，也不影响列表查询
+        
+        # 2. 【异步执行】检查即将过期的License，分别在30天、15天、7天发送提醒邮件
+        try:
+            email_manager = EmailManager()
+            
+            # 定义提醒区间：(下限, 上限]
+            reminder_ranges = [
+                {'days': 30, 'lower': 15, 'upper': 30},  # (15, 30]
+                {'days': 15, 'lower': 7, 'upper': 15},   # (7, 15]
+                {'days': 7, 'lower': 0, 'upper': 7},     # [0, 7]
+            ]
+            
+            all_expiring_records = []
+            for reminder in reminder_ranges:
+                days = reminder['days']
+                lower = reminder['lower']
+                upper = reminder['upper']
+                
+                # 计算对应的日期范围（直接使用 end_time 字段查询，更可靠）
+                if lower == 0:
+                    # 7天提醒：[0, 7] -> end_time 在 [now, now+7天]
+                    end_date_lower = now + timedelta(days=lower)
+                    end_date_upper = now + timedelta(days=upper)
+                    expiring_records = LicenseRecord.objects.filter(
+                        end_time__gte=end_date_lower,
+                        end_time__lte=end_date_upper,
+                        status=1  # 有效状态
+                    )
+                else:
+                    # 30天和15天提醒：(lower, upper] -> end_time 在 (now+lower, now+upper]
+                    end_date_lower = now + timedelta(days=lower)
+                    end_date_upper = now + timedelta(days=upper)
+                    expiring_records = LicenseRecord.objects.filter(
+                        end_time__gt=end_date_lower,
+                        end_time__lte=end_date_upper,
+                        status=1  # 有效状态
+                    )
+                
+                expiring_count = expiring_records.count()
+                if expiring_count > 0:
+                    logger.info(f"发现 {expiring_count} 条需要在{days}天提醒的 License 记录（剩余天数范围: {lower}-{upper}）")
+                    for record in expiring_records:
+                        all_expiring_records.append({
+                            'record': record,
+                            'days': days,
+                            'lower': lower,
+                            'upper': upper
+                        })
+            
+            # 【异步执行】发送即将过期提醒邮件（不阻塞列表加载）
+            if all_expiring_records:
+                self._send_async_emails(all_expiring_records, 'expiring')
+                
+        except Exception as e:
+            logger.error(f"检查即将过期License失败: {str(e)}")
+            # 即使检查失败，也不影响列表查询
+        
+        # 调用父类的 list 方法（立即返回，不受邮件发送影响）
+        return super().list(request, *args, **kwargs)
+    
+    def _send_async_emails(self, email_data_list, email_type):
+        """
+        异步发送邮件（不阻塞主线程）
+        :param email_data_list: 邮件数据列表
+        :param email_type: 'expired' 或 'expiring'
+        """
+        if not email_data_list:
+            return
+        
+        try:
+            # 创建后台线程异步发送邮件
+            thread = threading.Thread(
+                target=self._process_email_sending,
+                args=(email_data_list, email_type),
+                daemon=True  # 守护线程，主程序退出时自动终止
+            )
+            thread.start()
+            logger.info(f"已启动异步邮件发送线程，类型={email_type}, 数量={len(email_data_list)}")
+        except Exception as e:
+            logger.error(f"启动异步邮件发送线程失败: {str(e)}")
+    
+    def _process_email_sending(self, email_data_list, email_type):
+        """
+        实际处理邮件发送的逻辑（在后台线程中执行）
+        :param email_data_list: 邮件数据列表
+        :param email_type: 'expired' 或 'expiring'
+        """
+        from utils.email import EmailManager
+        from datetime import date
+        
+        now = date.today()
+        email_manager = EmailManager()
+        
+        logger.info(f"开始异步发送邮件，类型={email_type}, 总数={len(email_data_list)}")
+        
+        success_count = 0
+        fail_count = 0
+        
+        for item in email_data_list:
+            try:
+                if email_type == 'expired':
+                    # 过期邮件
+                    record = item
+                    extra_info = record.extra_info or {}
+                    
+                    if extra_info.get('expired_email_sent', False):
+                        logger.info(f"跳过已发送过期提醒邮件的记录: {record.application.serial_number}")
+                        continue
+                    
                     application = LicenseApplication.objects.get(id=record.application.id)
-                    # 检查申请人ID是否存在
                     if not application.applicant_id:
                         logger.warning(f"跳过发送邮件，申请人ID为空: {record.application.serial_number}")
                         continue
+                    
                     email_manager.license_expired_send_email(
-                        owner=application.applicant_id,  # 使用申请人ID而不是姓名
+                        owner=application.applicant_id,
                         application=application,
                         end_time=record.end_time
                     )
-                    # 标记已发送
+                    
                     extra_info['expired_email_sent'] = True
                     record.extra_info = extra_info
                     record.save(update_fields=['extra_info'])
-                    logger.info(f"已发送过期提醒邮件: {record.application.serial_number}")
-                except Exception as e:
-                    logger.error(f"发送过期提醒邮件失败 {record.application.serial_number}: {str(e)}")
-        
-        # 2. 检查即将过期的License（≤30天），发送提醒邮件
-        expiring_soon_records = LicenseRecord.objects.filter(
-            end_time__lte=expiring_threshold,
-            end_time__gt=now,
-            status=1,  # 有效状态
-            remaining_days__lte=30  # 剩余天数≤30
-        )
-        
-        if expiring_soon_records.exists():
-            email_manager = EmailManager()
-            for record in expiring_soon_records:
-                # 检查是否已发送即将过期提醒邮件
-                extra_info = record.extra_info or {}
-                if extra_info.get('expiring_soon_email_sent', False):
-                    logger.info(f"跳过已发送即将过期提醒邮件的记录: {record.application.serial_number}")
-                    continue
-                
-                # 获取关联的申请记录
-                try:
+                    logger.info(f"✓ 已发送过期提醒邮件: {record.application.serial_number}")
+                    success_count += 1
+                    
+                elif email_type == 'expiring':
+                    # 即将过期邮件
+                    record = item['record']
+                    days = item['days']
+                    lower = item['lower']
+                    upper = item['upper']
+                    
                     application = LicenseApplication.objects.get(id=record.application.id)
-                    # 检查申请人ID是否存在
                     if not application.applicant_id:
                         logger.warning(f"跳过发送邮件，申请人ID为空: {record.application.serial_number}")
                         continue
-                    # 发送即将过期提醒邮件
-                    email_manager.license_expiring_soon_send_email(
-                        owner=application.applicant_id,  # 使用申请人ID而不是姓名
-                        application=application,
-                        end_time=record.end_time,
-                        remaining_days=record.remaining_days
-                    )
-                    # 标记已发送
-                    extra_info['expiring_soon_email_sent'] = True
-                    record.extra_info = extra_info
-                    record.save(update_fields=['extra_info'])
-                    logger.info(f"已发送即将过期提醒邮件: {record.application.serial_number}, 剩余{record.remaining_days}天")
-                except Exception as e:
-                    logger.error(f"发送即将过期提醒邮件失败 {record.application.serial_number}: {str(e)}")
+                    
+                    user_info_list = application.user_info_list or []
+                    
+                    if len(user_info_list) > 0:
+                        # 产品组场景
+                        self._handle_product_group_reminder_async(
+                            record, application, email_manager, days, now, lower, upper
+                        )
+                    else:
+                        # 单产品场景
+                        self._handle_single_product_reminder_async(
+                            record, application, email_manager, days
+                        )
+                    success_count += 1
+                    
+            except Exception as e:
+                logger.error(f"✗ 发送邮件失败: {str(e)}")
+                fail_count += 1
+                continue
         
-        # 调用父类的 list 方法
-        return super().list(request, *args, **kwargs)
+        logger.info(f"异步邮件发送完成，类型={email_type}, 成功={success_count}, 失败={fail_count}")
+    
+    def _handle_single_product_reminder_async(self, record, application, email_manager, days):
+        """
+        处理单产品场景的邮件提醒（异步版本）
+        :param record: LicenseRecord 实例
+        :param application: LicenseApplication 实例
+        :param email_manager: EmailManager 实例
+        :param days: 剩余天数阈值（30/15/7）
+        """
+        extra_info = record.extra_info or {}
+        email_key = f'expiring_{days}day_email_sent'
+        
+        if extra_info.get(email_key, False):
+            logger.info(f"跳过已发送{days}天提醒邮件的记录: {record.application.serial_number}")
+            return
+        
+        logger.info(f"准备发送{days}天提醒邮件: {record.application.serial_number}, end_time={record.end_time}, remaining_days={record.remaining_days}")
+        
+        # 发送即将过期提醒邮件
+        email_manager.license_expiring_soon_send_email(
+            owner=application.applicant_id,
+            application=application,
+            end_time=record.end_time,
+            remaining_days=record.remaining_days
+        )
+        
+        # 标记已发送
+        extra_info[email_key] = True
+        record.extra_info = extra_info
+        record.save(update_fields=['extra_info'])
+        logger.info(f"✓ 已发送{days}天提醒邮件: {record.application.serial_number}, 剩余{record.remaining_days}天")
+    
+    def _handle_product_group_reminder_async(self, record, application, email_manager, days, now, lower, upper):
+        """
+        处理产品组场景的邮件提醒（异步版本）
+        检查每个产品的剩余天数，如果某个产品在提醒阈值范围内，则发送提醒
+        :param record: LicenseRecord 实例
+        :param application: LicenseApplication 实例
+        :param email_manager: EmailManager 实例
+        :param days: 剩余天数阈值（30/15/7）
+        :param now: 当前日期
+        :param lower: 下限
+        :param upper: 上限
+        """
+        from datetime import timedelta
+        
+        user_info_list = application.user_info_list or []
+        extra_info = record.extra_info or {}
+        
+        logger.info(f"处理产品组提醒: {record.application.serial_number}, 产品数量={len(user_info_list)}, 提醒天数={days}")
+        
+        # 收集需要提醒的产品信息
+        products_to_remind = []
+        
+        for idx, product_info in enumerate(user_info_list):
+            product_name = product_info.get('Product', '')  # ✅ 注意：字段名是 Product（大写P）
+            end_timestamp = product_info.get('Expirydate')  # ✅ 注意：字段名是 Expirydate（时间戳）
+            
+            if not product_name:
+                logger.info(f"产品 {idx} 没有 Product 名称，跳过")
+                continue
+            
+            if not end_timestamp:
+                logger.info(f"产品 {idx} ({product_name}) 没有 Expirydate，跳过")
+                continue
+            
+            # 解析产品结束时间（从毫秒时间戳转换为 date 对象）
+            try:
+                if isinstance(end_timestamp, (int, float)):
+                    # 毫秒时间戳 -> 秒 -> date 对象
+                    product_end_time = datetime.fromtimestamp(end_timestamp / 1000).date()
+                elif isinstance(end_timestamp, str):
+                    # 如果是字符串格式，尝试解析
+                    product_end_time = datetime.strptime(end_timestamp, '%Y-%m-%d').date()
+                else:
+                    product_end_time = end_timestamp
+            except (ValueError, TypeError) as e:
+                logger.warning(f"无法解析产品结束时间: {end_timestamp}, 错误: {str(e)}")
+                continue
+            
+            # 计算产品剩余天数
+            product_remaining_days = (product_end_time - now).days
+            
+            logger.info(f"产品 {idx} ({product_name}): end_time={product_end_time}, 剩余天数={product_remaining_days}, 检查范围({lower}-{upper})")
+            
+            # 判断该产品的剩余天数是否在提醒范围内
+            in_range = False
+            if lower == 0:
+                # 7天提醒：[0, 7]
+                in_range = (lower <= product_remaining_days <= upper)
+            else:
+                # 30天和15天提醒：(lower, upper]
+                in_range = (lower < product_remaining_days <= upper)
+            
+            logger.info(f"产品 {idx} ({product_name}): 是否在范围内={in_range}")
+            
+            if in_range:
+                # 检查是否已经为该产品和该天数发送过提醒
+                email_key = f'expiring_{days}day_{idx}_{product_name}_email_sent'
+                already_sent = extra_info.get(email_key, False)
+                
+                logger.info(f"产品 {idx} ({product_name}): 已发送标记={already_sent}")
+                
+                if not already_sent:
+                    logger.info(f"产品 {product_name} 需要提醒: 剩余{product_remaining_days}天, 范围({lower}-{upper})")
+                    products_to_remind.append({
+                        'index': idx,
+                        'name': product_name,
+                        'remaining_days': product_remaining_days,
+                        'email_key': email_key
+                    })
+        
+        # 如果有产品需要提醒，发送邮件
+        if products_to_remind:
+            # 构建产品信息列表用于邮件内容
+            product_details = []
+            for product in products_to_remind:
+                product_details.append({
+                    'name': product['name'],
+                    'remaining_days': product['remaining_days']
+                })
+            
+            # 发送提醒邮件（传入产品信息列表）
+            email_manager.license_expiring_soon_send_email(
+                owner=application.applicant_id,
+                application=application,
+                end_time=record.end_time,
+                remaining_days=days,  # 使用当前阈值
+                product_details=product_details  # 新增参数：具体产品信息
+            )
+            
+            # 标记每个产品已发送
+            for product in products_to_remind:
+                extra_info[product['email_key']] = True
+            
+            record.extra_info = extra_info
+            record.save(update_fields=['extra_info'])
+            
+            product_names = ', '.join([p['name'] for p in products_to_remind])
+            logger.info(f"✓ 已发送{days}天提醒邮件（产品组）: {record.application.serial_number}, 产品: {product_names}")
+        else:
+            logger.info(f"产品组中没有需要提醒的产品: {record.application.serial_number}")
+
     
     @action(methods=['get'], detail=False)
     def statistics(self, request):
@@ -2764,7 +3343,7 @@ class LicenseFieldMappingViewSet(CustomModelViewSet):
             raise
 
 
-def _generate_flexnet_template_file(serial_number, mac_address, hostname, product_name, product_features, user_info_list, file_hash, keyword=None):
+def _generate_flexnet_template_file(serial_number, mac_address, hostname, product_name, product_features, user_info_list, file_hash, keyword=None, is_product_group=False, group_products=None):
     """
     为单个产品生成 FlexNet 预制作 license 模板文件
     
@@ -2781,11 +3360,13 @@ def _generate_flexnet_template_file(serial_number, mac_address, hostname, produc
         serial_number: 序列号（用作文件名）
         mac_address: MAC地址
         hostname: 主机名
-        product_name: 产品名称
-        product_features: 产品feature字典 {product: {feature: quantity}} (仅包含一个产品)
+        product_name: 产品名称（用于文件名，对于产品组使用统一名称如 'GloryEX'）
+        product_features: 产品feature字典 {product: {feature: quantity}} (包含所有产品)
         user_info_list: UserInfo列表
         file_hash: 文件哈希值
         keyword: 关键字，如果为空使用 INCREMENT，不为空使用 FEATURE
+        is_product_group: 是否为产品组合并情况
+        group_products: 产品组内的产品名称列表（如 ['GloryEX', 'GloryEX3D', 'GloryPolaris']）
     
     Returns:
         str: 生成的模板文件路径，如果失败返回 None
@@ -2821,55 +3402,87 @@ def _generate_flexnet_template_file(serial_number, mac_address, hostname, produc
         # 第3行：USE_SERVER
         lines.append("USE_SERVER")
         
-        # 从第4行开始：INCREMENT 行
-        # 获取当前产品的 features
-        features = product_features.get(product_name, {})
-        if not features:
-            logger.warning(f"产品 {product_name} 没有 features，跳过生成")
-            return None
+        # 【关键修复】直接从 user_info_list 中解析产品、features 和时间，一个循环搞定
+        # user_info_list 结构：{'Product': 'GloryEX', 'Startdate': ts, 'Expirydate': ts, 'GloryEX': {'feat1': 10, ...}}
         
-        # 获取该产品的开始和结束时间
-        start_date_str = None
-        end_date_str = None
+        # 判断是否为产品组（需要从多个产品中合并 features）
+        gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris']
+        glorybolt_group_products = ['GloryBolt', 'GloryGrid']
         
+        is_product_group = False
+        related_products = []
+        if product_name == 'GloryEX':
+            is_product_group = True
+            related_products = gloryex_group_products
+        elif product_name == 'GloryBolt':
+            is_product_group = True
+            related_products = glorybolt_group_products
+        else:
+            related_products = [product_name]
+        
+        logger.info(f"FlexNet模板 - 产品: {product_name}, 是否产品组: {is_product_group}, 相关产品: {related_products}")
+        
+        # 验证是否有相关产品的数据
+        has_valid_data = False
         for ui in user_info_list:
-            if ui.get('Product') == product_name:
-                start_timestamp = ui.get('Startdate')
-                end_timestamp = ui.get('Expirydate')
-                
-                if start_timestamp and isinstance(start_timestamp, (int, float)):
-                    start_dt = datetime.fromtimestamp(start_timestamp / 1000)
-                    # 使用 %b 获取月份英文缩写（Jan, Feb等），然后转为小写
-                    start_date_str = start_dt.strftime("%d-%b-%Y").lower()
-                
-                if end_timestamp and isinstance(end_timestamp, (int, float)):
-                    end_dt = datetime.fromtimestamp(end_timestamp / 1000)
-                    # 使用 %b 获取月份英文缩写（Jan, Feb等），然后转为小写
-                    end_date_str = end_dt.strftime("%d-%b-%Y").lower()
-                
+            ui_product = ui.get('Product', '')
+            if ui_product in related_products:
+                has_valid_data = True
                 break
         
-        # 验证时间字段是否获取成功
-        if not start_date_str or not end_date_str:
-            logger.error(f"产品 {product_name} 缺少开始时间或结束时间，无法生成模板文件")
+        if not has_valid_data:
+            logger.error(f"产品 {product_name} 在 user_info_list 中找不到对应数据，无法生成模板文件")
             return None
         
-        # 为该产品的每个 feature 生成一个 INCREMENT/FEATURE 行
-        for feature_name, quantity in features.items():
-            # 根据 keyword 是否为空决定使用 INCREMENT 还是 FEATURE
-            if keyword:
-                # keyword 不为空，使用 FEATURE
-                feature_line = f"FEATURE {feature_name} PHLEXING 2.0 {end_date_str} {quantity} HOSTID=ANY {keyword} \\"
-            else:
-                # keyword 为空，使用 INCREMENT
-                feature_line = f"INCREMENT {feature_name} PHLEXING 2.0 {end_date_str} {quantity} HOSTID=ANY \\"
+        # 一个循环搞定：遍历 user_info_list，为每个相关产品的每个 feature 生成一行
+        for ui in user_info_list:
+            ui_product = ui.get('Product', '')
             
-            lines.append(feature_line)
+            # 只处理相关产品的数据
+            if ui_product not in related_products:
+                continue
             
-            # START=<start_date> SIGN="<16进制签名占位符> \
-            sign_placeholder = "01C8 B069 20FB 044D 0260 188E ECCB \\\n  5263 48AB 4A6D 3F4E 9B7D E6A7 3965 9E37 08E1 1044 D208 6E1D \\\n  60F4 07AA 03E4 A3D4 BC29 5411 EE8A B6F4 4972 505B 5A38"
-            start_line = f'  START={start_date_str} SIGN="{sign_placeholder}"'
-            lines.append(start_line)
+            # 获取该产品的 features 字典
+            product_features_dict = ui.get(ui_product, {})
+            if not product_features_dict:
+                logger.warning(f"产品 {ui_product} 没有 features，跳过")
+                continue
+            
+            # 获取该产品的开始和结束时间
+            ui_start_timestamp = ui.get('Startdate')
+            ui_end_timestamp = ui.get('Expirydate')
+            
+            if not ui_start_timestamp or not ui_end_timestamp:
+                logger.warning(f"产品 {ui_product} 缺少时间信息，跳过")
+                continue
+            
+            # 转换时间戳为日期字符串
+            from datetime import datetime
+            start_dt = datetime.fromtimestamp(ui_start_timestamp / 1000)
+            end_dt = datetime.fromtimestamp(ui_end_timestamp / 1000)
+            start_date_str = start_dt.strftime("%d-%b-%Y").lower()
+            end_date_str = end_dt.strftime("%d-%b-%Y").lower()
+            
+            logger.info(f"FlexNet模板 - 产品 {ui_product}: {start_date_str} ~ {end_date_str}, features: {list(product_features_dict.keys())}")
+            
+            # 为该产品的每个 feature 生成一行
+            for feature_name, quantity in product_features_dict.items():
+                # 根据 keyword 是否为空决定使用 INCREMENT 还是 FEATURE
+                if keyword:
+                    # keyword 不为空，使用 FEATURE
+                    feature_line = f"FEATURE {feature_name} PHLEXING 2.0 {end_date_str} {quantity} HOSTID=ANY {keyword} \\"
+                else:
+                    # keyword 为空，使用 INCREMENT
+                    feature_line = f"INCREMENT {feature_name} PHLEXING 2.0 {end_date_str} {quantity} HOSTID=ANY \\"
+                
+                lines.append(feature_line)
+                
+                # START=<start_date> SIGN="<16进制签名占位符> \
+                sign_placeholder = "01C8 B069 20FB 044D 0260 188E ECCB \\\n  5263 48AB 4A6D 3F4E 9B7D E6A7 3965 9E37 08E1 1044 D208 6E1D \\\n  60F4 07AA 03E4 A3D4 BC29 5411 EE8A B6F4 4972 505B 5A38"
+                start_line = f'  START={start_date_str} SIGN="{sign_placeholder}"'
+                lines.append(start_line)
+                
+                logger.info(f"FlexNet模板 - 生成 {ui_product} 的 Feature '{feature_name}', 数量={quantity}, 时间: {start_date_str} ~ {end_date_str}")
             
             # 添加反斜杠结束
             # lines.append("  \\")

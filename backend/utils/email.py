@@ -282,7 +282,7 @@ class EmailManager:
         messages.append(message)
         self.send_email(messages)
 
-    def license_expiring_soon_send_email(self, owner, application, end_time, remaining_days):
+    def license_expiring_soon_send_email(self, owner, application, end_time, remaining_days, product_details=None):
         """
         发送 License 即将过期提醒邮件
         
@@ -291,9 +291,10 @@ class EmailManager:
             application: LicenseApplication 实例
             end_time: License 结束时间
             remaining_days: 剩余天数
+            product_details: 产品详细信息列表（可选），用于产品组场景
         """
         messages = []
-        message = LicenseExpiringSoonMessage(owner, application, end_time, remaining_days)
+        message = LicenseExpiringSoonMessage(owner, application, end_time, remaining_days, product_details)
         messages.append(message)
         self.send_email(messages)
 
@@ -425,11 +426,12 @@ class LicenseExpiredMessage(EmailMessage):
 class LicenseExpiringSoonMessage(EmailMessage):
     """License 即将过期提醒邮件"""
     
-    def __init__(self, owner, application, end_time, remaining_days):
+    def __init__(self, owner, application, end_time, remaining_days, product_details=None):
         self.owner = owner
         self.application = application
         self.end_time = end_time
         self.remaining_days = remaining_days
+        self.product_details = product_details or []  # 产品详细信息列表（可选）
         super().__init__(self.owner, '')
         self.set_RC_email()
         self.set_Cc_email()
@@ -452,56 +454,123 @@ class LicenseExpiringSoonMessage(EmailMessage):
         return
 
     def _generate_subject(self):
-        return f"License 即将过期提醒 - {self.application.product}"
+        return f"License 即将过期提醒 - {self.application.customer_name} - {self.application.product}"
 
     def _generate_body_html(self):
-        html = f"""
-        <html>
-        <head>
-        <style>
-        table {{
-            border-collapse: collapse;
-            width: 100%;
-        }}
-        th, td {{
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
-        }}
-        th {{
-            background-color: #f2f2f2;
-        }}
-        .warning-row {{
-            background-color: #fff3cd;
-        }}
-        </style>
-        </head>
-        <body>
-        <h2>License 即将过期提醒</h2>
-        <table>
-            <tr>
-                <th>产品名称</th>
-                <th>申请人</th>
-                <th>客户名称</th>
-                <th>序列号</th>
-                <th>结束时间</th>
-                <th>剩余天数</th>
-            </tr>
-            <tbody>
-                <tr class="warning-row">
-                    <td>{self.application.product}</td>
+        # 如果有产品详细信息（产品组场景），生成产品列表
+        if self.product_details and len(self.product_details) > 0:
+            # 产品组场景：显示每个产品的剩余天数
+            product_rows = ''
+            for idx, product in enumerate(self.product_details):
+                product_name = product.get('name', '')
+                product_remaining_days = product.get('remaining_days', 0)
+                
+                # 根据剩余天数设置不同的样式
+                if product_remaining_days <= 7:
+                    row_style = 'background-color: #f8d7da;'
+                elif product_remaining_days <= 15:
+                    row_style = 'background-color: #fff3cd;'
+                else:
+                    row_style = 'background-color: #d4edda;'
+                
+                product_rows += f"""
+                <tr style="{row_style}">
+                    <td>{product_name}</td>
                     <td>{self.application.applicant}</td>
                     <td>{self.application.customer_name}</td>
                     <td>{self.application.serial_number}</td>
-                    <td>{self.end_time.strftime('%Y-%m-%d')}</td>
-                    <td>{self.remaining_days}天</td>
+                    <td>-</td>
+                    <td><strong>{product_remaining_days}天</strong></td>
                 </tr>
-            </tbody>
-        </table>
-        <p style="color: orange; margin-top: 20px;">请注意：该 License 将在 {self.remaining_days} 天后过期，请及时续费或重新申请！</p>
-        </body>
-        </html>
-        """
+                """
+            
+            html = f"""
+            <html>
+            <head>
+            <style>
+            table {{
+                border-collapse: collapse;
+                width: 100%;
+            }}
+            th, td {{
+                border: 1px solid #ddd;
+                padding: 8px;
+                text-align: left;
+            }}
+            th {{
+                background-color: #f2f2f2;
+            }}
+            </style>
+            </head>
+            <body>
+            <h2>License 即将过期提醒（产品组）</h2>
+            <p>以下产品的 License 将在 {product_remaining_days} 天后过期：</p>
+            <table>
+                <tr>
+                    <th>产品名称</th>
+                    <th>申请人</th>
+                    <th>客户名称</th>
+                    <th>序列号</th>
+                    <th>结束时间</th>
+                    <th>剩余天数</th>
+                </tr>
+                <tbody>
+                    {product_rows}
+                </tbody>
+            </table>
+            <p style="color: orange; margin-top: 20px;">请注意：请及时续费或重新申请这些产品，如已申请，请忽略该邮件！</p>
+            </body>
+            </html>
+            """
+        else:
+            # 单产品场景：原有逻辑
+            html = f"""
+            <html>
+            <head>
+            <style>
+            table {{
+                border-collapse: collapse;
+                width: 100%;
+            }}
+            th, td {{
+                border: 1px solid #ddd;
+                padding: 8px;
+                text-align: left;
+            }}
+            th {{
+                background-color: #f2f2f2;
+            }}
+            .warning-row {{
+                background-color: #fff3cd;
+            }}
+            </style>
+            </head>
+            <body>
+            <h2>License 即将过期提醒</h2>
+            <table>
+                <tr>
+                    <th>产品名称</th>
+                    <th>申请人</th>
+                    <th>客户名称</th>
+                    <th>序列号</th>
+                    <th>结束时间</th>
+                    <th>剩余天数</th>
+                </tr>
+                <tbody>
+                    <tr class="warning-row">
+                        <td>{self.application.product}</td>
+                        <td>{self.application.applicant}</td>
+                        <td>{self.application.customer_name}</td>
+                        <td>{self.application.serial_number}</td>
+                        <td>{self.end_time.strftime('%Y-%m-%d')}</td>
+                        <td>{self.remaining_days}天</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p style="color: orange; margin-top: 20px;">请注意：该 License 将在 {self.remaining_days} 天后过期，请及时续费或重新申请，如已申请，请忽略该邮件！</p>
+            </body>
+            </html>
+            """
         return html
 
     def _generate_body_text(self):
@@ -515,7 +584,7 @@ class LicenseExpiringSoonMessage(EmailMessage):
             结束时间: {self.end_time.strftime('%Y-%m-%d')}
             剩余天数: {self.remaining_days}天
             
-            请注意：该 License 将在 {self.remaining_days} 天后过期，请及时续费或重新申请！
+            请注意：该 License 将在 {self.remaining_days} 天后过期，请及时续费或重新申请，如已申请，请忽略该邮件！
         """
 
 
@@ -561,50 +630,91 @@ class LicenseGeneratedMessage(EmailMessage):
         return content
 
     def _generate_subject(self):
-        return f"License 制作成功通知 - {self.application.product}"
+        return f"License 制作成功通知 - {self.application.customer_name} - {self.application.product}"
 
     def _generate_body_html(self):
         # 构建文件路径
         file_path = f"{self.remote_dir}/{self.license_file_name}"
+
+        # 判断是否有 user_info_list（产品组情况）
+        has_user_info_list = hasattr(self.application, 'user_info_list') and self.application.user_info_list
         
-        # 获取时间信息
-        start_time_str = self.application.start_time.strftime('%Y-%m-%d') if self.application.start_time else 'N/A'
-        end_time_str = self.application.end_time.strftime('%Y-%m-%d') if self.application.end_time else 'N/A'
+        # 调试日志
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[邮件生成] application.id={self.application.id}")
+        logger.info(f"[邮件生成] has_user_info_list={has_user_info_list}")
+        if has_user_info_list:
+            logger.info(f"[邮件生成] user_info_list={self.application.user_info_list}")
+        else:
+            logger.warning(f"[邮件生成] user_info_list 为空或不存在")
         
-        # 构建特性列表
-        feature_list = ''
-        if self.application.feature and isinstance(self.application.feature, list):
-            # 判断是否为产品组（GloryEX 或 GloryBolt）
-            is_gloryex_group = self.application.product == 'GloryEX'
-            is_glorybolt_group = self.application.product == 'GloryBolt'
-            
-            if (is_gloryex_group or is_glorybolt_group) and self.application.quantity and isinstance(self.application.quantity, dict):
-                # 产品组：按产品分组显示
-                for product_name, product_quantity in self.application.quantity.items():
-                    if isinstance(product_quantity, dict) and product_quantity:
-                        # 为每个子产品创建一个分组标题
-                        feature_list += f"<li style='margin-top: 10px;'><strong>{product_name}:</strong></li>"
-                        # 显示该子产品的所有 feature
-                        for feat, qty in product_quantity.items():
+        if has_user_info_list:
+            # 产品组：直接从 user_info_list 中获取每个产品的完整信息
+            products_html = ''
+            for idx, item in enumerate(self.application.user_info_list, 1):
+                product_name = item.get('Product', '')
+                start_timestamp = item.get('Startdate', 0)
+                end_timestamp = item.get('Expirydate', 0)
+                
+                # 转换时间戳为日期字符串
+                from datetime import datetime
+                start_date_str = 'N/A'
+                end_date_str = 'N/A'
+                
+                if start_timestamp and isinstance(start_timestamp, (int, float)):
+                    try:
+                        start_date_str = datetime.fromtimestamp(start_timestamp / 1000).strftime('%Y-%m-%d')
+                    except:
+                        pass
+                
+                if end_timestamp and isinstance(end_timestamp, (int, float)):
+                    try:
+                        end_date_str = datetime.fromtimestamp(end_timestamp / 1000).strftime('%Y-%m-%d')
+                    except:
+                        pass
+                
+                # 获取该产品的授权数量（从 user_info_list 中直接获取）
+                quantity_items = ''
+                # 使用产品名称作为 key 获取授权数量
+                if product_name in item:
+                    prod_features = item[product_name]
+                    if isinstance(prod_features, dict):
+                        for feat, qty in prod_features.items():
                             quantity_str = str(qty) if qty else ''
-                            feature_list += f"<li style='margin-left: 20px;'>{feat} (授权数量: {quantity_str})</li>"
-            else:
-                # 非产品组：扁平显示
-                for feat in self.application.feature:
-                    quantity = ''
-                    if self.application.quantity and isinstance(self.application.quantity, dict):
-                        # 先尝试直接从 quantity 中查找（扁平结构）
-                        quantity = self.application.quantity.get(feat, '')
-                        # 如果没找到，尝试在嵌套结构中查找（产品组的情况）
-                        if not quantity:
-                            for product_key, product_quantity in self.application.quantity.items():
-                                if isinstance(product_quantity, dict):
-                                    quantity = product_quantity.get(feat, '')
-                                    if quantity:
-                                        break
-                        quantity = str(quantity) if quantity else ''
-                    feature_list += f"<li>{feat} (授权数量: {quantity})</li>"
-        
+                            quantity_items += f"<li style='margin-left: 20px;'>{feat} (授权数量: {quantity_str})</li>"
+                
+                products_html += f"""
+                <div class="info-section" style="margin-bottom: 15px;">
+                    <h3>📦 产品 {idx}: {product_name}</h3>
+                    <div class="info-grid">
+                        <div class="info-label">生效时间：</div>
+                        <div class="info-value">{start_date_str}</div>
+                        
+                        <div class="info-label">过期时间：</div>
+                        <div class="info-value">{end_date_str}</div>
+                    </div>
+                    {f'<ul class="feature-list" style="margin-top: 10px;">{quantity_items}</ul>' if quantity_items else '<p style="color: #666; margin-top: 10px;">无授权特性</p>'}
+                </div>
+                """
+        else:
+            # 单个产品：使用原有的逻辑
+            products_html = f"""
+            <div class="info-section">
+                <h3>📦 产品信息</h3>
+                <div class="info-grid">
+                    <div class="info-label">产品名称：</div>
+                    <div class="info-value">{self.application.product}</div>
+                    
+                    <div class="info-label">生效时间：</div>
+                    <div class="info-value">{self.application.start_time.strftime('%Y-%m-%d') if self.application.start_time else 'N/A'}</div>
+                    
+                    <div class="info-label">过期时间：</div>
+                    <div class="info-value">{self.application.end_time.strftime('%Y-%m-%d') if self.application.end_time else 'N/A'}</div>
+                </div>
+            </div>
+            """
+
         html = f"""
         <html>
         <head>
@@ -690,37 +800,25 @@ class LicenseGeneratedMessage(EmailMessage):
             </div>
             
             <div class="info-section">
-                <h3>📦 License 文件信息</h3>
+                <h3>📋 基本信息</h3>
                 <div class="info-grid">
-                    <div class="info-label">产品名称：</div>
-                    <div class="info-value">{self.application.product}</div>
-                    
                     <div class="info-label">客户名称：</div>
                     <div class="info-value">{self.application.customer_name}</div>
                     
                     <div class="info-label">序列号：</div>
                     <div class="info-value">{self.application.serial_number}</div>
-                    
-                    <div class="info-label">生效时间：</div>
-                    <div class="info-value">{start_time_str}</div>
-                    
-                    <div class="info-label">过期时间：</div>
-                    <div class="info-value">{end_time_str}</div>
                 </div>
             </div>
+            
+            {products_html}
             
             <div class="info-section">
                 <h3>📂 文件存放位置</h3>
                 <p style="margin-bottom: 5px;">License 文件已存放在以下目录：</p>
                 <div class="file-path">{file_path}</div>
                 <p style="color: #666; font-size: 13px; margin-top: 10px;">
-                    💡 提示：请前往上述路径找到文件 <strong>{self.license_file_name}</strong> 并下载
+                    💡 提示：该文件路径方便追溯附件的原始文件 <strong>{self.license_file_name}</strong> 的真实存放位置,邮件接收者请忽略!
                 </p>
-            </div>
-            
-            <div class="info-section">
-                <h3>🔑 授权特性</h3>
-                {f'<ul class="feature-list">{feature_list}</ul>' if feature_list else '<p style="color: #666;">无特性信息</p>'}
             </div>
             
             <div class="info-section">
@@ -754,34 +852,63 @@ class LicenseGeneratedMessage(EmailMessage):
         # 构建文件路径
         file_path = f"{self.remote_dir}/{self.license_file_name}"
         
-        # 获取时间信息
-        start_time_str = self.application.start_time.strftime('%Y-%m-%d') if self.application.start_time else 'N/A'
-        end_time_str = self.application.end_time.strftime('%Y-%m-%d') if self.application.end_time else 'N/A'
+        # 判断是否有 user_info_list（产品组情况）
+        has_user_info_list = hasattr(self.application, 'user_info_list') and self.application.user_info_list
         
-        # 构建特性列表
-        feature_list = ''
-        if self.application.feature and isinstance(self.application.feature, list):
-            # 判断是否为 GloryEX 组产品
-            is_gloryex_group = self.application.product == 'GloryEX'
-            
-            if is_gloryex_group and self.application.quantity and isinstance(self.application.quantity, dict):
-                # GloryEX 组产品：按产品分组显示
-                for product_name, product_quantity in self.application.quantity.items():
-                    if isinstance(product_quantity, dict) and product_quantity:
-                        # 为每个子产品创建一个分组标题
-                        feature_list += f"\n  {product_name}:\n"
-                        # 显示该子产品的所有 feature
-                        for feat, qty in product_quantity.items():
+        if has_user_info_list:
+            # 产品组：直接从 user_info_list 中获取每个产品的完整信息
+            products_text = ''
+            for idx, item in enumerate(self.application.user_info_list, 1):
+                product_name = item.get('Product', '')
+                start_timestamp = item.get('Startdate', 0)
+                end_timestamp = item.get('Expirydate', 0)
+                
+                # 转换时间戳为日期字符串
+                from datetime import datetime
+                start_date_str = 'N/A'
+                end_date_str = 'N/A'
+                
+                if start_timestamp and isinstance(start_timestamp, (int, float)):
+                    try:
+                        start_date_str = datetime.fromtimestamp(start_timestamp / 1000).strftime('%Y-%m-%d')
+                    except:
+                        pass
+                
+                if end_timestamp and isinstance(end_timestamp, (int, float)):
+                    try:
+                        end_date_str = datetime.fromtimestamp(end_timestamp / 1000).strftime('%Y-%m-%d')
+                    except:
+                        pass
+                
+                # 获取该产品的授权数量（从 user_info_list 中直接获取）
+                quantity_items = ''
+                # 使用产品名称作为 key 获取授权数量
+                if product_name in item:
+                    prod_features = item[product_name]
+                    if isinstance(prod_features, dict):
+                        for feat, qty in prod_features.items():
                             quantity_str = str(qty) if qty else ''
-                            feature_list += f"    - {feat} (授权数量: {quantity_str})\n"
-            else:
-                # 非 GloryEX 组产品：扁平显示
+                            quantity_items += f"    - {feat} (授权数量: {quantity_str})\n"
+                
+                products_text += f"""
+                【产品 {idx}: {product_name}】
+                生效时间: {start_date_str}
+                过期时间: {end_date_str}
+                {quantity_items}"""
+        else:
+            # 单个产品：使用原有的逻辑
+            start_time_str = self.application.start_time.strftime('%Y-%m-%d') if self.application.start_time else 'N/A'
+            end_time_str = self.application.end_time.strftime('%Y-%m-%d') if self.application.end_time else 'N/A'
+            
+            # 构建特性列表
+            feature_list = ''
+            if self.application.feature and isinstance(self.application.feature, list):
                 for feat in self.application.feature:
                     quantity = ''
                     if self.application.quantity and isinstance(self.application.quantity, dict):
                         # 先尝试直接从 quantity 中查找（扁平结构）
                         quantity = self.application.quantity.get(feat, '')
-                        # 如果没找到，尝试在嵌套结构中查找（GloryEX 组的情况）
+                        # 如果没找到，尝试在嵌套结构中查找（产品组的情况）
                         if not quantity:
                             for product_key, product_quantity in self.application.quantity.items():
                                 if isinstance(product_quantity, dict):
@@ -790,34 +917,36 @@ class LicenseGeneratedMessage(EmailMessage):
                                         break
                         quantity = str(quantity) if quantity else ''
                     feature_list += f"  - {feat} (授权数量: {quantity})\n"
+            
+            products_text = f"""
+  【产品信息】
+  产品名称: {self.application.product}
+  生效时间: {start_time_str}
+  过期时间: {end_time_str}
+{feature_list}"""
         
         text = f"""
                 License 文件制作成功
                 
-                【License 文件信息】
-                产品名称：{self.application.product}
-                客户名称：{self.application.customer_name}
-                序列号：{self.application.serial_number}
-                生效时间：{start_time_str}
-                过期时间：{end_time_str}
+                【基本信息】
+                客户名称: {self.application.customer_name}
+                序列号: {self.application.serial_number}
+                {products_text}
                 
                 【文件存放位置】
                 License 文件已存放在以下目录：
                 {file_path}
                 
-                提示：请前往上述路径找到文件 {self.license_file_name} 并下载
-                
-                【授权特性】
-                {feature_list if feature_list else '无特性信息'}
+                提示：该文件路径方便追溯附件的原始文件 {self.license_file_name} 的真实存放位置，邮件接收者请忽略!
                 
                 【申请信息】
-                申请人：{self.application.applicant}
-                申请类型：{self.get_application_type_display()}
-                MAC 地址：{self.application.mac_address}
-                主机名：{self.application.hostname}
+                申请人: {self.application.applicant}
+                申请类型: {self.get_application_type_display()}
+                MAC 地址: {self.application.mac_address}
+                主机名: {self.application.hostname}
                 
                 此邮件为系统自动发送，请勿直接回复。
-                发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                发送时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 如有问题，请联系系统管理员。
             """
         return text
@@ -860,7 +989,7 @@ class LicenseFailedMessage(EmailMessage):
         return
 
     def _generate_subject(self):
-        return f"License 制作失败通知 - {self.application.product}"
+        return f"License 制作失败通知 - {self.application.customer_name} - {self.application.product}"
 
     def _generate_body_html(self):
         # 获取时间信息

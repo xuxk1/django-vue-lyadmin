@@ -19,6 +19,8 @@ DATABASE_PASSWORD = "root123456"
 DATABASE_NAME = "lyadmin_db"
 #数据库编码
 DATABASE_CHARSET = "utf8mb4"
+# SSL开关
+DATABASE_SSL = False
 # 数据库长连接时间（默认为0，单位秒）即每次请求都重新连接,debug模式下该值应该写为0 ，mysql默认长连接超时时间为8小时
 DATABASE_CONN_MAX_AGE = 0 #推荐120（2分钟），使用 None 则是无限的持久连接（不推荐）。
 
@@ -51,7 +53,7 @@ MAIL_PORT = 25
 MAIL_USER = "systemmail@xingphle.com"
 MAIL_PASSWORD = "YueMing#560"
 MAIL_RECIPIENT = "lijiadong"
-MAIL_CC = "xuxiaokui"
+MAIL_CC = "xuxiaokui,zhuxueting"
 
 # ================================================= #
 # ************** 服务器基本 配置  ************** #
