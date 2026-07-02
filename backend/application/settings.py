@@ -131,7 +131,10 @@ DATABASES = {
         'OPTIONS': {
                     'ssl': DATABASE_SSL,
                     'charset':DATABASE_CHARSET,
-                    'init_command': 'SET default_storage_engine=INNODB', #innodb才支持事务
+                    'init_command': 'SET sql_mode=STRICT_TRANS_TABLES, default_storage_engine=INNODB', #innodb才支持事务
+                    'connect_timeout': DATABASE_CONNECT_TIMEOUT,
+                    'read_timeout': DATABASE_TIMEOUT_READ,
+                    'write_timeout': DATABASE_TIMEOUT_WRITE,
                 }
     }
 }
@@ -267,7 +270,7 @@ USE_I18N = True
 
 USE_L10N = True
 
-USE_TZ = False#设置为中国时间
+USE_TZ = True#设置为中国时间
 
 
 # Static files (CSS, JavaScript, Images)
@@ -540,15 +543,39 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 JSON_FILE_PATH = r"D:\eladmin"
 
 # ================================================= #
+# ******************** License过期提醒配置 ******************** #
+# ================================================= #
+# License即将过期提醒规则（单位：天）
+# 格式：{'days': 提醒天数, 'lower': 下限(不包含), 'upper': 上限(包含)}
+# 默认配置：
+#   - 30天提醒：剩余天数在 (15, 30] 范围内发送
+#   - 15天提醒：剩余天数在 (7, 15] 范围内发送
+#   - 7天提醒：剩余天数在 [0, 7] 范围内发送
+LICENSE_EXPIRATION_REMINDERS = [
+    {'days': 30, 'lower': 15, 'upper': 30},  # 30天提醒，范围(15, 30]
+    {'days': 15, 'lower': 7, 'upper': 15},   # 15天提醒，范围(7, 15]
+    {'days': 7, 'lower': 0, 'upper': 7},     # 7天提醒，范围[0, 7]
+]
+
+# 是否启用License过期自动检查（视图层）
+LICENSE_AUTO_CHECK_ENABLED = True
+
+# ================================================= #
 # ******************** django-crontab配置 ******************** #
 # ================================================= #
 CRONJOBS = [
-    # 每天凌晨2点执行License过期检查和邮件提醒
-    ('0 2 * * *', 'apps.lylicense.management.commands.check_license_expiration.Command', '', {}),
-    
-    # 或者每小时检查一次（开发环境测试用）
-    # ('0 * * * *', 'apps.lylicense.management.commands.check_license_expiration.Command', '', {}),
+    # 每天凌晨2点执行
+    ('0 2 * * *', 'apps.lylicense.cron.check_license_expiration_job', '>> /var/log/license_cron.log 2>&1'),
+
+    # 每5分钟执行一次（开发测试用，正式环境请注释掉）
+    ('*/5 * * * *', 'apps.lylicense.cron.check_license_expiration_job', '>> /var/log/license_cron_debug.log 2>&1'),
 ]
+
+# 环境变量前缀
+CRONTAB_COMMAND_PREFIX = 'LANG=en_US.UTF-8'
+
+# 命令后缀（2>&1 表示将标准错误重定向到标准输出）
+CRONTAB_COMMAND_SUFFIX = '2>&1'
 
 # Windows环境下使用绝对路径存储日志文件
 import platform
@@ -558,5 +585,5 @@ if platform.system() == 'Windows':
         os.makedirs(CRON_LOG_DIR)
     # Windows下不使用日志重定向，由命令内部处理
     CRONJOBS = [
-        ('0 2 * * *', 'apps.lylicense.management.commands.check_license_expiration.Command', ''),
+        ('0 2 * * *', 'apps.lylicense.cron.check_license_expiration_job', ''),
     ]

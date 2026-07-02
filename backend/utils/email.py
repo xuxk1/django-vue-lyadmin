@@ -339,7 +339,19 @@ class LicenseExpiredMessage(EmailMessage):
         self.set_Cc_email()
 
     def set_Cc_email(self):
-        cc_names = [config.MAIL_CC]  # recipient
+        # 根据 usage_type 和 scope_application 决定抄送对象
+        cc_names = [config.MAIL_CC]  # 默认外部申请抄送
+        
+        usage_type = getattr(self.application, 'usage_type', 'external')
+        if usage_type == 'internal':
+            # 内部申请，检查 scope_application 字段的值
+            scope_value = getattr(self.application, 'scope_application', '')
+            if scope_value in config.LICENSE_INTERNAL_CC_SCOPES:
+                cc_names = [config.MAIL_INTERNAL_CC]  # 内部申请特定场景抄送
+                logger.info(f"License过期提醒 - 内部申请({scope_value})，使用 MAIL_INTERNAL_CC 抄送")
+            else:
+                logger.info(f"License过期提醒 - 内部申请(其他:{scope_value})，使用 MAIL_CC 抄送")
+        
         cc_addr = []
         for name in cc_names:
             cc_addr.append(name + '@phlexing.com')
@@ -356,7 +368,8 @@ class LicenseExpiredMessage(EmailMessage):
         return
 
     def _generate_subject(self):
-        return f"License 结束时间过期提醒 - {self.application.product}"
+        # 使用序列号作为唯一标识，避免 SMTP 服务器认为主题重复
+        return f"License 已过期 - {self.application.serial_number} - {self.application.product}"
 
     def _generate_body_html(self):
         html = f"""
@@ -437,7 +450,19 @@ class LicenseExpiringSoonMessage(EmailMessage):
         self.set_Cc_email()
 
     def set_Cc_email(self):
-        cc_names = [config.MAIL_CC]  # recipient
+        # 根据 usage_type 和 scope_application 决定抄送对象
+        cc_names = [config.MAIL_CC]  # 默认外部申请抄送
+        
+        usage_type = getattr(self.application, 'usage_type', 'external')
+        if usage_type == 'internal':
+            # 内部申请，检查 scope_application 字段的值
+            scope_value = getattr(self.application, 'scope_application', '')
+            if scope_value in config.LICENSE_INTERNAL_CC_SCOPES:
+                cc_names = [config.MAIL_INTERNAL_CC]  # 内部申请特定场景抄送
+                logger.info(f"License即将过期提醒 - 内部申请({scope_value})，使用 MAIL_INTERNAL_CC 抄送")
+            else:
+                logger.info(f"License即将过期提醒 - 内部申请(其他:{scope_value})，使用 MAIL_CC 抄送")
+        
         cc_addr = []
         for name in cc_names:
             cc_addr.append(name + '@phlexing.com')
@@ -454,7 +479,15 @@ class LicenseExpiringSoonMessage(EmailMessage):
         return
 
     def _generate_subject(self):
-        return f"License 即将过期提醒 - {self.application.customer_name} - {self.application.product}"
+        # 如果有产品详细信息（多产品场景），在主题中包含产品信息
+        if self.product_details and len(self.product_details) > 0:
+            # 提取所有产品名称，用逗号分隔
+            product_names = ', '.join([p.get('name', '') for p in self.product_details])
+            # 使用序列号作为唯一标识，避免 SMTP 服务器认为主题重复
+            return f"License 即将过期提醒 - {self.remaining_days}天 - {self.application.serial_number} - {product_names}"
+        else:
+            # 单产品场景
+            return f"License 即将过期提醒 - {self.remaining_days}天 - {self.application.serial_number} - {self.application.product}"
 
     def _generate_body_html(self):
         # 如果有产品详细信息（产品组场景），生成产品列表
@@ -464,6 +497,13 @@ class LicenseExpiringSoonMessage(EmailMessage):
             for idx, product in enumerate(self.product_details):
                 product_name = product.get('name', '')
                 product_remaining_days = product.get('remaining_days', 0)
+                product_end_time = product.get('end_time', None)
+                
+                # 格式化结束时间
+                if product_end_time:
+                    end_time_str = str(product_end_time)
+                else:
+                    end_time_str = '-'
                 
                 # 根据剩余天数设置不同的样式
                 if product_remaining_days <= 7:
@@ -479,7 +519,7 @@ class LicenseExpiringSoonMessage(EmailMessage):
                     <td>{self.application.applicant}</td>
                     <td>{self.application.customer_name}</td>
                     <td>{self.application.serial_number}</td>
-                    <td>-</td>
+                    <td>{end_time_str}</td>
                     <td><strong>{product_remaining_days}天</strong></td>
                 </tr>
                 """
@@ -602,7 +642,19 @@ class LicenseGeneratedMessage(EmailMessage):
         self.set_Cc_email()
 
     def set_Cc_email(self):
-        cc_names = [config.MAIL_CC]  # recipient
+        # 根据 usage_type 和 scope_application 决定抄送对象
+        cc_names = [config.MAIL_CC]  # 默认外部申请抄送
+        
+        usage_type = getattr(self.application, 'usage_type', 'external')
+        if usage_type == 'internal':
+            # 内部申请，检查 scope_application 字段的值
+            scope_value = getattr(self.application, 'scope_application', '')
+            if scope_value in config.LICENSE_INTERNAL_CC_SCOPES:
+                cc_names = [config.MAIL_INTERNAL_CC]  # 内部申请特定场景抄送
+                logger.info(f"License制作成功 - 内部申请({scope_value})，使用 MAIL_INTERNAL_CC 抄送")
+            else:
+                logger.info(f"License制作成功 - 内部申请(其他:{scope_value})，使用 MAIL_CC 抄送")
+        
         cc_addr = []
         for name in cc_names:
             cc_addr.append(name + '@phlexing.com')
@@ -972,7 +1024,19 @@ class LicenseFailedMessage(EmailMessage):
         self.set_Cc_email()
 
     def set_Cc_email(self):
-        cc_names = [config.MAIL_CC]  # recipient
+        # 根据 usage_type 和 scope_application 决定抄送对象
+        cc_names = [config.MAIL_CC]  # 默认外部申请抄送
+        
+        usage_type = getattr(self.application, 'usage_type', 'external')
+        if usage_type == 'internal':
+            # 内部申请，检查 scope_application 字段的值
+            scope_value = getattr(self.application, 'scope_application', '')
+            if scope_value in config.LICENSE_INTERNAL_CC_SCOPES:
+                cc_names = [config.MAIL_INTERNAL_CC]  # 内部申请特定场景抄送
+                logger.info(f"License制作失败 - 内部申请({scope_value})，使用 MAIL_INTERNAL_CC 抄送")
+            else:
+                logger.info(f"License制作失败 - 内部申请(其他:{scope_value})，使用 MAIL_CC 抄送")
+        
         cc_addr = []
         for name in cc_names:
             cc_addr.append(name + '@phlexing.com')

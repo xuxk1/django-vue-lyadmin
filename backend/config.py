@@ -21,8 +21,14 @@ DATABASE_NAME = "lyadmin_db"
 DATABASE_CHARSET = "utf8mb4"
 # SSL开关
 DATABASE_SSL = False
+# 连接超时时间
+DATABASE_CONNECT_TIMEOUT = 30
+# 数据库读取超时时间
+DATABASE_TIMEOUT_READ = 60
+# 数据库写入超时时间
+DATABASE_TIMEOUT_WRITE = 60
 # 数据库长连接时间（默认为0，单位秒）即每次请求都重新连接,debug模式下该值应该写为0 ，mysql默认长连接超时时间为8小时
-DATABASE_CONN_MAX_AGE = 0 #推荐120（2分钟），使用 None 则是无限的持久连接（不推荐）。
+DATABASE_CONN_MAX_AGE = 600 #推荐120（2分钟），使用 None 则是无限的持久连接（不推荐）。
 
 # ================================================= #
 # ************** redis 配置  ************** #
@@ -54,6 +60,14 @@ MAIL_USER = "systemmail@xingphle.com"
 MAIL_PASSWORD = "YueMing#560"
 MAIL_RECIPIENT = "lijiadong"
 MAIL_CC = "xuxiaokui,zhuxueting"
+MAIL_INTERNAL_CC = "wangjibao"
+
+# License邮件抄送规则配置
+# 内部申请时，当ScopeApplication字段的值为以下值时，使用MAIL_INTERNAL_CC进行抄送
+LICENSE_INTERNAL_CC_SCOPES = [
+    '客户现场使用',
+    '需要IT安装到公司服务器',
+]
 
 # ================================================= #
 # ************** 服务器基本 配置  ************** #
@@ -207,3 +221,14 @@ BITANSWER_API_BASE_URL = 'http://172.16.30.24:80'  # Bitanswer API基础地址
 BITANSWER_BITKEY = 'your-bitkey-here'  # Bitanswer API的bitkey，固定值
 BITANSWER_TEMPLATE_NAME = 'test_api'
 BITANSWER_BUSINESS_NAME = 'test_linux'
+
+# ================================================= #
+# ************** 公共产品 配置  ************** #
+# ================================================= #
+
+COMMON_PRODUCT = {
+    "GloryEXCommon": [
+        "GloryEX",
+        "GloryEX3D"
+    ]
+}

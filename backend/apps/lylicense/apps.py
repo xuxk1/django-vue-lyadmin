@@ -181,8 +181,8 @@ class LylicenseConfig(AppConfig):
                             try:
                                 from apps.lylicense.views import _generate_flexnet_template_file
                                 
-                                # 特殊产品分组：GloryEX、GloryEX3D、GloryPolaris 合并为一个模板文件
-                                gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris']
+                                # 特殊产品分组：GloryEX、GloryEX3D、GloryPolaris、GloryEXCommon 合并为一个模板文件
+                                gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris', 'GloryEXCommon']
                                 glorybolt_group_products = ['GloryBolt', 'GloryGrid']  # 【新增】GloryBolt 组
                                 
                                 # 第一步：检测是否存在 GloryEX 组的产品
@@ -325,8 +325,8 @@ class LylicenseConfig(AppConfig):
                                 logger.error(f"生成 FlexNet 预制作模板文件失败: {str(e)}", exc_info=True)
                                 # 不阻断流程，继续创建申请记录
                         
-                        # 特殊产品分组：GloryEX、GloryEX3D、GloryPolaris 合并为一个申请记录
-                        gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris']
+                        # 特殊产品分组：GloryEX、GloryEX3D、GloryPolaris、GloryEXCommon 合并为一个申请记录
+                        gloryex_group_products = ['GloryEX', 'GloryEX3D', 'GloryPolaris', 'GloryEXCommon']
                         glorybolt_group_products = ['GloryBolt', 'GloryGrid']  # 【新增】GloryBolt 组
                         
                         # 按产品分组处理
@@ -383,12 +383,13 @@ class LylicenseConfig(AppConfig):
                                 # 处理MAC地址：在最外层已经处理过了，直接使用
                                 # mac_address 变量已经在上面提取并处理
                                 
-                                # 【关键修复】为 GloryEX 组过滤出专属的 user_info_list
+                                # 【关键修复】为 GloryEX 组过滤出专属的 user_info_list（包含 GloryEXCommon）
                                 gloryex_user_info_list = [
                                     ui for ui in user_info_list 
                                     if ui.get('Product') in gloryex_group_products
                                 ]
                                 logger.info(f"GloryEX 组专属 user_info_list 长度: {len(gloryex_user_info_list)}")
+                                logger.info(f"GloryEX 组产品列表: {[ui.get('Product') for ui in gloryex_user_info_list]}")
                                 
                                 # 检查该产品的申请记录是否已存在
                                 if LicenseApplication.objects.filter(file_hash=file_hash, product='GloryEX').exists():
@@ -411,10 +412,18 @@ class LylicenseConfig(AppConfig):
                                     if gloryex_user_info_list:
                                         logger.info(f"[DEBUG] gloryex_user_info_list 内容: {json.dumps(gloryex_user_info_list, ensure_ascii=False)[:500]}...")
                                     
+                                    # 从转换后的数据中提取 ScopeApplication 的值（如果存在）
+                                    scope_application = ''
+                                    if user_type == 'internal':
+                                        # 优先从 transformed_data 中获取（已经映射后的 real_key）
+                                        scope_application = transformed_data.get('ScopeApplication', '')
+                                    
                                     application = LicenseApplication.objects.create(
                                         applicant=applicant or '未知申请人',
                                         applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
                                         application_type=license_type,
+                                        usage_type=user_type,  # 使用范围（内部/外部）
+                                        scope_application=scope_application if scope_application else None,  # 使用范围具体值
                                         feature=gloryex_feature_list if gloryex_feature_list else [],
                                         product='GloryEX',  # 统一使用GloryEX作为产品名
                                         serial_number=serial_number or '',
@@ -877,11 +886,19 @@ class LylicenseConfig(AppConfig):
                                     except Exception as e:
                                         logger.warning(f"提取申请人账号失败: {str(e)}")
                                     
+                                    # 从转换后的数据中提取 ScopeApplication 的值（如果存在）
+                                    scope_application = ''
+                                    if user_type == 'internal':
+                                        # 优先从 transformed_data 中获取（已经映射后的 real_key）
+                                        scope_application = transformed_data.get('ScopeApplication', '')
+                                    
                                     # 创建GloryBolt组的申请记录
                                     application = LicenseApplication.objects.create(
                                         applicant=applicant or '未知申请人',
                                         applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
                                         application_type=license_type,
+                                        usage_type=user_type,  # 使用范围（内部/外部）
+                                        scope_application=scope_application if scope_application else None,  # 使用范围具体值
                                         feature=glorybolt_feature_list if glorybolt_feature_list else [],
                                         product='GloryBolt',  # 统一使用GloryBolt作为产品名
                                         serial_number=serial_number or '',
@@ -1260,10 +1277,18 @@ class LylicenseConfig(AppConfig):
                                     except Exception as e:
                                         logger.warning(f"提取申请人账号失败: {str(e)}")
                                     
+                                    # 从转换后的数据中提取 ScopeApplication 的值（如果存在）
+                                    scope_application = ''
+                                    if user_type == 'internal':
+                                        # 优先从 transformed_data 中获取（已经映射后的 real_key）
+                                        scope_application = transformed_data.get('ScopeApplication', '')
+                                    
                                     application = LicenseApplication.objects.create(
                                         applicant=applicant or '未知申请人',
                                         applicant_id=applicant_id if applicant_id else None,  # 保存申请人ID
                                         application_type=license_type,
+                                        usage_type=user_type,  # 使用范围（内部/外部）
+                                        scope_application=scope_application if scope_application else None,  # 使用范围具体值
                                         feature=feat_list if feat_list else [],
                                         product=product,
                                         serial_number=serial_number or '',

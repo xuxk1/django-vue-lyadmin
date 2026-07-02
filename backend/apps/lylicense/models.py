@@ -27,6 +27,16 @@ class LicenseApplication(BaseModel):
     # License类型
     application_type = models.CharField(max_length=20, choices=APPLICATION_TYPE, verbose_name="License类型")
     
+    # 使用范围（内部/外部）
+    USAGE_TYPE = (
+        ('internal', '内部'),
+        ('external', '外部'),
+    )
+    usage_type = models.CharField(max_length=20, choices=USAGE_TYPE, default='external', null=True, blank=True, verbose_name="使用范围", help_text="内部:公司内部测试使用、客户现场使用、需要IT安装到公司服务器；外部:其他")
+    
+    # 使用范围具体值（从 radioField_mdy73q6h_id 解析而来）
+    scope_application = models.CharField(max_length=100, null=True, blank=True, verbose_name="使用范围具体值", help_text="内部申请时的具体使用场景：客户现场使用、需要IT安装到公司服务器等")
+    
     # 功能特性
     feature = models.JSONField(null=True, blank=True, verbose_name="Feature列表")  # 存储 Feature 名称列表
     product = models.CharField(max_length=200, null=True, blank=True, verbose_name="产品名称")
