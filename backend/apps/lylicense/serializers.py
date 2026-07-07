@@ -1,6 +1,9 @@
+import logging
 from rest_framework import serializers
 from utils.serializers import CustomModelSerializer
 from apps.lylicense.models import LicenseApplication, LicenseRecord, LicenseFieldMapping
+
+logger = logging.getLogger(__name__)
 
 
 class LicenseApplicationSerializer(CustomModelSerializer):
@@ -36,9 +39,11 @@ class LicenseApplicationSerializer(CustomModelSerializer):
         
         # ✅ 【新增】定义公共部分产品的映射关系
         # 当选择 GloryEX3D 时，将 product="GloryEX" 的公共部分也归入 GloryEX3D
+        # GloryEXCommon 作为独立的公共产品，其 features 可以被所有相关产品使用
         public_part_mapping = {
             'GloryEX': ['GloryEX', 'GloryEX3D'],  # GloryEX 的公共部分可以用于这两个产品
             'GloryEX3D': ['GloryEX3D', 'GloryEX'],  # GloryEX3D 的公共部分也可以用于这两个产品
+            'GloryEXCommon': ['GloryEX', 'GloryEX3D', 'GloryPolaris', 'GloryEXCommon'],  # GloryEXCommon 的公共部分可以用于所有这些产品
         }
         
         # ✅ 【关键修复】对所有有 user_info_list 的数据都进行格式化
@@ -75,6 +80,17 @@ class LicenseApplicationSerializer(CustomModelSerializer):
             # ✅ 【关键修复】提取该产品的 features 信息
             # user_info 的结构：{'Product': 'GloryEX', 'Startdate': ts, 'Expirydate': ts, 'GloryEX': {'feat1': 10, ...}}
             product_features = user_info.get(product, {})
+            
+            # ✅ 【新增】特殊处理 GloryEXCommon：如果 GloryEXCommon 本身没有 features，尝试从相关产品中合并
+            if product == 'GloryEXCommon' and (not product_features or len(product_features) == 0):
+                logger.info(f"[序列化器] GloryEXCommon 没有直接 features，尝试从相关产品中合并")
+                # GloryEXCommon 的 features 应该来自 GloryEX 和 GloryEX3D
+                common_features = {}
+                for source_product in ['GloryEX', 'GloryEX3D']:
+                    if source_product in user_info and isinstance(user_info[source_product], dict):
+                        common_features.update(user_info[source_product])
+                product_features = common_features
+                logger.info(f"[序列化器] 从相关产品合并后的 features: {product_features}")
             
             # ✅ 【新增】智能处理公共部分：如果当前产品是 GloryEX3D，但 user_info 中的 product 是 GloryEX
             # 且这是公共部分的 feature，则将其视为当前产品的一部分
@@ -220,9 +236,11 @@ class LicenseRecordSerializer(CustomModelSerializer):
         
         # ✅ 【新增】定义公共部分产品的映射关系
         # 当选择 GloryEX3D 时，将 product="GloryEX" 的公共部分也归入 GloryEX3D
+        # GloryEXCommon 作为独立的公共产品，其 features 可以被所有相关产品使用
         public_part_mapping = {
             'GloryEX': ['GloryEX', 'GloryEX3D'],  # GloryEX 的公共部分可以用于这两个产品
             'GloryEX3D': ['GloryEX3D', 'GloryEX'],  # GloryEX3D 的公共部分也可以用于这两个产品
+            'GloryEXCommon': ['GloryEX', 'GloryEX3D', 'GloryPolaris', 'GloryEXCommon'],  # GloryEXCommon 的公共部分可以用于所有这些产品
         }
         
         # ✅ 调试日志：输出原始数据结构
@@ -265,6 +283,17 @@ class LicenseRecordSerializer(CustomModelSerializer):
             # ✅ 【关键修复】提取该产品的 features 信息
             # user_info 的结构：{'Product': 'GloryEX', 'Startdate': ts, 'Expirydate': ts, 'GloryEX': {'feat1': 10, ...}}
             product_features = user_info.get(product, {})
+            
+            # ✅ 【新增】特殊处理 GloryEXCommon：如果 GloryEXCommon 本身没有 features，尝试从相关产品中合并
+            if product == 'GloryEXCommon' and (not product_features or len(product_features) == 0):
+                logger.info(f"[序列化器] GloryEXCommon 没有直接 features，尝试从相关产品中合并")
+                # GloryEXCommon 的 features 应该来自 GloryEX 和 GloryEX3D
+                common_features = {}
+                for source_product in ['GloryEX', 'GloryEX3D']:
+                    if source_product in user_info and isinstance(user_info[source_product], dict):
+                        common_features.update(user_info[source_product])
+                product_features = common_features
+                logger.info(f"[序列化器] 从相关产品合并后的 features: {product_features}")
             
             # ✅ 【新增】智能处理公共部分：如果当前产品是 GloryEX3D，但 user_info 中的 product 是 GloryEX
             # 且这是公共部分的 feature，则将其视为当前产品的一部分

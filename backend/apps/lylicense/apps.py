@@ -64,6 +64,13 @@ class LylicenseConfig(AppConfig):
                     Returns:
                         bool: 是否处理成功
                     """
+                    from django.db import close_old_connections, connection
+                    close_old_connections()
+                    try:
+                        connection.close()
+                    except:
+                        pass
+
                     # 延迟导入，避免循环导入
                     import hashlib
                     from apps.lylicense.views import transform_json_with_mapping

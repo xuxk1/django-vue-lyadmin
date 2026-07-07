@@ -26,6 +26,7 @@ django-celery-beat==2.3.0
 django-celery-results==2.4.0
 django-comment-migrate==0.1.5
 django-cors-headers==3.13.0
+django_crontab
 django-filter==22.1
 django-ranged-response==0.2.0
 django-redis==5.2.0
@@ -83,6 +84,7 @@ uritemplate==4.1.1
 urllib3==1.26.12
 user-agents==2.2.0
 vine==5.0.0
+watchdog
 wcwidth==0.2.5
 wrapt==1.14.1
 xlrd==2.0.1

@@ -867,8 +867,14 @@ class LicenseApplicationViewSet(CustomModelViewSet):
     extra_filter_backends = []
     
     def get_queryset(self):
-        """重写查询集，支持产品名称筛选（包括 user_info_list 中的产品）"""
+        """重写查询集，支持产品名称筛选（包括 user_info_list 中的产品）和权限控制"""
         queryset = super().get_queryset()
+        
+        # 权限控制：只有管理员可以查看所有申请记录
+        user = self.request.user
+        if not user.is_superuser and not user.identity in [0, 1]:  # 非超级管理员和系统管理员
+            queryset = queryset.filter(applicant_id=user.username)
+        
         # 兼容前端两种参数名：product 和 product_name
         product_name = self.request.query_params.get('product') or self.request.query_params.get('product_name')
         if product_name:
@@ -921,8 +927,13 @@ class LicenseApplicationViewSet(CustomModelViewSet):
             
             logger.info(f"[产品查询] 过滤后结果数量: {len(filtered_data)}, IDs: {[obj.id for obj in filtered_data]}")
             
-            # 重新创建 QuerySet（用于分页）
+            # 重新创建 QuerySet（用于分页），保持权限过滤
             queryset = LicenseApplication.objects.filter(id__in=[obj.id for obj in filtered_data])
+            
+            # 再次应用权限过滤（确保非管理员只能看到自己的记录）
+            user = request.user
+            if not user.is_superuser and not user.identity in [0, 1]:  # 非超级管理员和系统管理员
+                queryset = queryset.filter(applicant_id=user.username)
         
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -2991,8 +3002,14 @@ class LicenseRecordViewSet(CustomModelViewSet):
     extra_filter_backends = []
     
     def get_queryset(self):
-        """重写查询集，支持客户名称筛选"""
+        """重写查询集，支持客户名称筛选和权限控制"""
         queryset = super().get_queryset()
+        
+        # 权限控制：只有管理员可以查看所有制作记录
+        user = self.request.user
+        if not user.is_superuser and not user.identity in [0, 1]:  # 非超级管理员和系统管理员
+            queryset = queryset.filter(application__applicant_id=user.username)
+        
         customer_name = self.request.query_params.get('customer_name')
         if customer_name:
             queryset = queryset.filter(application__customer_name__icontains=customer_name)
@@ -3535,15 +3552,31 @@ class LicenseRecordViewSet(CustomModelViewSet):
     def statistics(self, request):
         """
         获取License统计信息
+        管理员：查看所有统计数据
+        普通用户：只查看与自己相关的统计数据
         """
         from django.db.models import Count
         from datetime import datetime, timedelta, date
         
+        # 权限控制：根据用户身份确定查询集
+        user = request.user
+        is_admin = user.is_superuser or user.identity in [0, 1]
+        
+        # 基础查询集
+        if is_admin:
+            # 管理员：查询所有记录
+            base_queryset = LicenseRecord.objects.all()
+            logger.info(f"[License统计] 管理员 {user.username} 查看所有统计数据")
+        else:
+            # 普通用户：只查询与自己相关的记录
+            base_queryset = LicenseRecord.objects.filter(application__applicant_id=user.username)
+            logger.info(f"[License统计] 普通用户 {user.username} 查看个人统计数据")
+        
         # 使用本地时间
         now = date.today()  # 使用 date 而不是 datetime，因为 end_time 是 DateField
         
-        # 自动更新已过期的License状态
-        expired_count = LicenseRecord.objects.filter(
+        # 自动更新已过期的License状态（只更新当前用户可见的记录）
+        expired_count = base_queryset.filter(
             end_time__lt=now,
             status=1  # 只更新当前状态为有效的
         ).update(status=2)  # 更新为已过期
@@ -3551,13 +3584,13 @@ class LicenseRecordViewSet(CustomModelViewSet):
         if expired_count > 0:
             logger.info(f"自动更新了 {expired_count} 条已过期的 License 记录状态")
         
-        # 按类型统计
-        type_stats = LicenseRecord.objects.values('license_type').annotate(
+        # 按类型统计（基于权限过滤后的查询集）
+        type_stats = base_queryset.values('license_type').annotate(
             count=Count('id')
         )
         
-        # 按状态统计
-        status_stats = LicenseRecord.objects.values('status').annotate(
+        # 按状态统计（基于权限过滤后的查询集）
+        status_stats = base_queryset.values('status').annotate(
             count=Count('id')
         )
         
@@ -3565,19 +3598,19 @@ class LicenseRecordViewSet(CustomModelViewSet):
         expiring_threshold = now + timedelta(days=30)
         
         # 即将过期的License（status=1 有效状态，且 end_time 距离现在<=30天且>0天）
-        expiring_soon = LicenseRecord.objects.filter(
+        expiring_soon = base_queryset.filter(
             end_time__lte=expiring_threshold,
             end_time__gt=now,
             status=1  # 有效状态
         ).count()
         
         # 已过期的License（status=2 已过期状态）
-        expired = LicenseRecord.objects.filter(
+        expired = base_queryset.filter(
             status=2  # 已过期状态
         ).count()
 
         # 有效的（status=1 有效状态）
-        efficient = LicenseRecord.objects.filter(
+        efficient = base_queryset.filter(
             status=1  # 有效状态
         ).count()
         
@@ -3587,7 +3620,7 @@ class LicenseRecordViewSet(CustomModelViewSet):
             'expiring_soon': expiring_soon,
             'expired': expired,
             'efficient': efficient,
-            'total': LicenseRecord.objects.count()
+            'total': base_queryset.count()
         })
 
 

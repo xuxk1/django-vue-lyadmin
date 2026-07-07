@@ -270,7 +270,7 @@ USE_I18N = True
 
 USE_L10N = True
 
-USE_TZ = True#设置为中国时间
+USE_TZ = False#设置为中国时间
 
 
 # Static files (CSS, JavaScript, Images)
