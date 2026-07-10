@@ -15,7 +15,7 @@ module.exports = {
     API_URL : process.env.NODE_ENV === 'development' ? "http://"+ API_DOMAIN +"/api/" : "https://"+ API_DOMAIN +"/api/",
 
     //标题
-    APP_TITLE : "效能运营中心管理系统",
+    APP_TITLE : "研发效能运营中心",
 
 	//是否开启多标签
 	ISMULTITABS: true,

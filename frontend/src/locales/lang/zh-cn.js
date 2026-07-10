@@ -1,5 +1,7 @@
 export default {
+	
 	login: {
+		platformTitle: '研发效能运营中心',
 		loginInTitle: '用户登录',
 		loginAccount: '请输入账号',
 		loginPWD: '请输入密码',

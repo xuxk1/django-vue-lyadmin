@@ -317,11 +317,19 @@ class Command(BaseCommand):
         # 收集需要提醒的产品信息
         products_to_remind = []
         
+        # 【关键】获取 License 类型，只有 FlexNet 才有公共的 feature
+        license_type = application.application_type  # 'flexnet' 或 'bitanswer'
+        
         for idx, product_info in enumerate(user_info_list):
             product_name = product_info.get('Product', '')
             end_timestamp = product_info.get('Expirydate')
             
             if not product_name or not end_timestamp:
+                continue
+            
+            # 【关键修复】对于 Bitanswer 类型，跳过 GloryEXCommon（它没有独立的过期时间）
+            if license_type != 'flexnet' and ('Common' in product_name or product_name == 'GloryEXCommon'):
+                logger.debug(f"  产品[{idx}] {product_name}: Bitanswer 类型无公共部分，跳过")
                 continue
             
             # 解析产品结束时间（从毫秒时间戳转换为 date 对象）

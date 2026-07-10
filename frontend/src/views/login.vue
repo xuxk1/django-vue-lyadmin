@@ -16,9 +16,11 @@
       </div>
       <div class="login-wrap box" :style="{'--animationState':animationState}">
         <el-form label-position="left" :model="ruleForm" :rules="rules" ref="ruleForm" label-width="0px" class="demo-ruleForm login-container">
+            <!-- 平台标题 - 新增 -->
+<!--            <div class="platform-title">{{ $t('login.platformTitle') || '研发效能运营中心平台' }}</div>-->
             <h3 class="title">
                 <div class="login-logo">
-                   <img style="width: 100%;" src="../assets/logo.png" alt="logo">
+                   <img src="../assets/logonew.png" alt="logo">
                </div>
 <!--                <img style="height: 55px;margin-bottom: 10px" src="../assets/logo-old.png" alt="logo">-->
                 <span>{{ $t('login.loginInTitle') }}</span>
@@ -54,7 +56,7 @@
         </el-form>
       </div>
        <div class="login-copyright">
-           Copyright © 2022 django-vue-lyadmin All rights reserved.
+           Copyright © 2026 www.phlexing.com All rights reserved.
        </div>
     </div>
 </template>
@@ -513,18 +515,13 @@
    }
    .login-logo{
         overflow: hidden;
-        width: 100px;
-        height: 100px;
-        border-radius: 50%;
-        -webkit-box-shadow: 0 4px 40px rgb(0 0 0 / 7%);
-        box-shadow: 0 4px 40px rgb(0 0 0 / 7%);
-        background-color: var(--el-bg-color);
+        width: 374px;
+        height: 139px;
         z-index: 10;
         -webkit-box-sizing: border-box;
         box-sizing: border-box;
-        padding: 20px;
-        text-align: center;
         margin-bottom: 20px;
+        margin-top: 20px;
    }
    .login-copyright{
         color: #999;
@@ -547,12 +544,13 @@
       border-radius: 10px;
       margin: 0px auto;
       width: 374px;
-      height: 469px;
+      height: 600px;
       padding: 30px 35px 15px 35px;
       background: var(--el-bg-color);
       border: 1px solid #eaeaea;
       text-align: left;
       box-shadow: 0 0 20px 2px rgba(0, 0, 0, 0.1);
+      margin-top: 80px;
     }
     .title {
         display: flex;
@@ -569,6 +567,21 @@
       margin: 0px 0px 15px 0px;
     }
   }
+
+  /* 平台标题样式 - 新增 */
+  //.platform-title {
+  //  text-align: center;
+  //  font-size: 28px;
+  //  font-weight: 700;
+  //  color: var(--el-color-primary);
+  //  margin-bottom: 5px;
+  //  letter-spacing: 2px;
+  //  position: relative;
+  //  z-index: 2;
+  //  padding-bottom: 5px;
+  //  border-bottom: 2px solid var(--el-color-primary-light-8);
+  //}
+
   .market-login{
     width: 1200px;
     margin: 0 auto;

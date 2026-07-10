@@ -6,6 +6,7 @@ import os
 import time
 import logging
 import sys
+import threading
 from pathlib import Path
 
 # Windows系统下使用PollingObserver更稳定
@@ -32,6 +33,7 @@ class LicenseFileHandler(FileSystemEventHandler):
         super().__init__()
         self.process_callback = process_callback
         self.processed_files = set()  # 记录已处理的文件，避免重复处理
+        self._lock = threading.Lock()  # 线程锁，保护 processed_files
     
     def on_created(self, event):
         """
@@ -54,13 +56,18 @@ class LicenseFileHandler(FileSystemEventHandler):
         
         logger.info(f"检测到新文件: {file_path}")
         
+        # 【关键修复】使用线程锁，在检查的同时立即标记为"正在处理"
+        # 这样可以防止多个线程同时通过检查导致重复处理
+        with self._lock:
+            if file_path in self.processed_files:
+                logger.warning(f"文件已处理过，跳过: {file_path}")
+                return
+            
+            # 立即标记为正在处理（在处理前就标记）
+            self.processed_files.add(file_path)
+        
         # 延迟一下，确保文件写入完成
         time.sleep(2)
-        
-        # 检查文件是否已经处理过
-        if file_path in self.processed_files:
-            logger.warning(f"文件已处理过，跳过: {file_path}")
-            return
         
         try:
             # 调用回调函数处理文件
@@ -70,14 +77,19 @@ class LicenseFileHandler(FileSystemEventHandler):
                 result = self.process_callback(file_path)
                 logger.info(f"回调函数返回结果: {result}")
                 if result:
-                    self.processed_files.add(file_path)
                     logger.info(f"文件处理成功: {file_path}")
                 else:
                     logger.error(f"文件处理失败: {file_path}")
+                    # 处理失败时，从集合中移除，允许重试
+                    with self._lock:
+                        self.processed_files.discard(file_path)
             else:
                 logger.warning("未设置文件处理回调函数")
         except Exception as e:
             logger.error(f"处理文件时出错 {file_path}: {str(e)}", exc_info=True)
+            # 异常时，从集合中移除，允许重试
+            with self._lock:
+                self.processed_files.discard(file_path)
     
     def on_modified(self, event):
         """

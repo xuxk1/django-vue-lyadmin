@@ -254,6 +254,14 @@ class EmailManager:
                     logging.warning(f"Send attempt {retry_count} failed, retrying in {self.retry_delay} seconds...")
                     time.sleep(self.retry_delay)
 
+    def send_raw_email(self, msg):
+        """发送原始邮件对象"""
+        if not self.server:
+            self.connect()
+
+        self.server.send_message(msg)
+        logger.info(f"邮件发送成功: {msg.get('To', '')}")
+
     def __del__(self):
         """Cleanup SMTP connection"""
         if self.server:
@@ -484,10 +492,10 @@ class LicenseExpiringSoonMessage(EmailMessage):
             # 提取所有产品名称，用逗号分隔
             product_names = ', '.join([p.get('name', '') for p in self.product_details])
             # 使用序列号作为唯一标识，避免 SMTP 服务器认为主题重复
-            return f"License 即将过期提醒 - {self.remaining_days}天 - {self.application.serial_number} - {product_names}"
+            return f"License 即将过期提醒 - {self.application.customer_name} - {product_names} - {self.application.serial_number}"
         else:
             # 单产品场景
-            return f"License 即将过期提醒 - {self.remaining_days}天 - {self.application.serial_number} - {self.application.product}"
+            return f"License 即将过期提醒 - {self.application.customer_name} - {self.application.product} - {self.application.serial_number} "
 
     def _generate_body_html(self):
         # 如果有产品详细信息（产品组场景），生成产品列表
@@ -703,14 +711,31 @@ class LicenseGeneratedMessage(EmailMessage):
         
         if has_user_info_list:
             # 产品组：直接从 user_info_list 中获取每个产品的完整信息
+            # 【关键修改】将GloryEXCommon 的特性合并到GloryEX中展示，不单独展示
             products_html = ''
-            for idx, item in enumerate(self.application.user_info_list, 1):
+            product_idx = 0
+
+            # 第一步：收集所有产品信息，并识别需要合并的产品
+            gloryex_common_item = None # GloryEXCommon 产品信息
+            other_products = [] # 其他产品信息列表
+
+            for item in self.application.user_info_list:
+                product_name = item.get('Product', '')
+
+                # 如果是 GloryEXCommon，单独保存用于后续合并
+                if product_name == 'GloryEXCommon':
+                    gloryex_common_item = item
+                else:
+                    other_products.append(item)
+
+            # 第二步：遍历其他产品，如果是 GloryEX 则合并Common 的特性
+            for item in other_products:
+                product_idx += 1
                 product_name = item.get('Product', '')
                 start_timestamp = item.get('Startdate', 0)
                 end_timestamp = item.get('Expirydate', 0)
-                
-                # 转换时间戳为日期字符串
-                from datetime import datetime
+
+                # 转换时间戳为日期字符串（使用模块级导入的datetime）
                 start_date_str = 'N/A'
                 end_date_str = 'N/A'
                 
@@ -735,10 +760,23 @@ class LicenseGeneratedMessage(EmailMessage):
                         for feat, qty in prod_features.items():
                             quantity_str = str(qty) if qty else ''
                             quantity_items += f"<li style='margin-left: 20px;'>{feat} (授权数量: {quantity_str})</li>"
+
+                # 【关键】如果是 GloryEX 产品，且存在 GloryEXCommon，则合并 Common 的特性
+                if product_name == 'GloryEX' and gloryex_common_item:
+                    common_product_name = gloryex_common_item.get('Product', '')
+                    if common_product_name in gloryex_common_item:
+                        common_features = gloryex_common_item[common_product_name]
+                        if isinstance(common_features, dict):
+                            # 添加分隔线
+                            quantity_items += "<li style='margin-left: 20px;margin-top: 10px; border-top: 1px solid #ddd; padding-top: 5px;'><strong>———GloryEXCommon 公共特性 ————</strong></li>"
+                            # 添加 Common 的特性
+                            for feat, qty in common_features.items():
+                                quantity_str = str(qty) if qty else ''
+                                quantity_items += f"<li style='margin-left: 20px;'>{feat} (授权数量: {quantity_str})</li>"
                 
                 products_html += f"""
                 <div class="info-section" style="margin-bottom: 15px;">
-                    <h3>📦 产品 {idx}: {product_name}</h3>
+                    <h3>📦 产品 {product_idx}: {product_name}</h3>
                     <div class="info-grid">
                         <div class="info-label">生效时间：</div>
                         <div class="info-value">{start_date_str}</div>
@@ -909,14 +947,31 @@ class LicenseGeneratedMessage(EmailMessage):
         
         if has_user_info_list:
             # 产品组：直接从 user_info_list 中获取每个产品的完整信息
+            # 【关键修改】将GloryEXCommon 的特性合并到GloryEX中展示，不单独显示
             products_text = ''
-            for idx, item in enumerate(self.application.user_info_list, 1):
+            product_idx = 0
+
+            # 第一步：收集所有产品信息，并识别需要合并的产品
+            gloryex_common_item = None  # GloryEXCommon 产品信息
+            other_products = []  # 其他产品信息列表
+
+            for item in self.application.user_info_list:
+                product_name = item.get('Product', '')
+
+                # 如果是 GloryEXCommon，单独保存用于后续合并
+                if product_name == 'GloryEXCommon':
+                    gloryex_common_item = item
+                else:
+                    other_products.append(item)
+
+            # 第二步：遍历其他产品，如果是 GloryEX 则合并Common 的特性
+            for item in other_products:
+                product_idx += 1
                 product_name = item.get('Product', '')
                 start_timestamp = item.get('Startdate', 0)
                 end_timestamp = item.get('Expirydate', 0)
-                
-                # 转换时间戳为日期字符串
-                from datetime import datetime
+
+                # 转换时间戳为日期字符串（使用模块级导入的datetime）
                 start_date_str = 'N/A'
                 end_date_str = 'N/A'
                 
@@ -941,9 +996,22 @@ class LicenseGeneratedMessage(EmailMessage):
                         for feat, qty in prod_features.items():
                             quantity_str = str(qty) if qty else ''
                             quantity_items += f"    - {feat} (授权数量: {quantity_str})\n"
+
+                # 【关键】如果是 GloryEX 产品，且存在 GloryEXCommon，则合并 Common 的特性
+                if product_name == 'GloryEX' and gloryex_common_item:
+                    common_product_name = gloryex_common_item.get('Product', '')
+                    if common_product_name in gloryex_common_item:
+                        common_features = gloryex_common_item[common_product_name]
+                        if isinstance(common_features, dict):
+                            # 添加分隔线
+                            quantity_items += "    ———GloryEXCommon 公共特性 ————\n"
+                            # 添加 Common 的特性
+                            for feat, qty in common_features.items():
+                                quantity_str = str(qty) if qty else ''
+                                quantity_items += f"    - {feat} (授权数量: {quantity_str})\n"
                 
                 products_text += f"""
-                【产品 {idx}: {product_name}】
+                【产品 {product_idx}: {product_name}】
                 生效时间: {start_date_str}
                 过期时间: {end_date_str}
                 {quantity_items}"""

@@ -72,7 +72,7 @@ def _execute_remote_lmcrypt(template_file_path, product_name):
         
         # 连接 SSH
         if ssh_key_file:
-            ssh.connect(ssh_host, username=ssh_user, key_filename=ssh_key_file)
+            ssh.connect(ssh_host, username=ssh_user, key_filename=ssh_key_file, allow_agent=False, look_for_keys=False)
         else:
             ssh.connect(ssh_host, username=ssh_user)
         
@@ -333,7 +333,7 @@ def get_applicant_from_transformed_data(transformed_data, license_type, user_typ
         logger.error(f"提取申请人账号失败: {str(e)}")
         return ''
 
-def append_common_userinfo(user_info_list):
+def append_common_userinfo(user_info_list, license_type='flexnet'):
     """
     自动生成公共产品 UserInfo
 
@@ -343,8 +343,19 @@ def append_common_userinfo(user_info_list):
         GloryEX3D
               ↓
         GloryEXCommon
+    
+    注意：只有 FlexNet 类型的 License 才有公共的 feature，Bitanswer 没有
+
+    Args:
+        user_info_list: 用户信息列表
+        license_type: License类型 ('flexnet' 或 'bitanswer')
     """
     if not user_info_list:
+        return user_info_list
+
+    # 【关键】只有 FlexNet 类型才有公共的 feature，Bitanswer 没有
+    if license_type != 'flexnet':
+        logger.debug(f"License类型为 {license_type}，跳过生成公共产品 UserInfo")
         return user_info_list
 
     # 已存在Common就跳过
@@ -804,9 +815,10 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
             product_expirydate = base_info.get('Expirydate', 0)
             
             # 公共部分时间继承规则：如果时间为0，从其他产品中继承
+            # 【关键】只有 FlexNet 类型的 License 才有公共的 feature，Bitanswer 没有
             # 注意：只有当产品名称包含 "Common" 时才应用此规则
-            if 'Common' in product or product == 'GloryEXCommon':
-                # 公共产品，如果时间为0，从其他产品中继承
+            if ('Common' in product or product == 'GloryEXCommon') and license_type_from_json == 'flexnet':
+                # 公共产品且为 FlexNet 类型，如果时间为0，从其他产品中继承
                 if product_startdate == 0 and default_startdate > 0:
                     product_startdate = default_startdate
                 if product_expirydate == 0 and default_expirydate > 0:
@@ -830,7 +842,8 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
     
     # 如果有 UserInfo，添加到 transformed_data
     if user_info_list:
-        append_common_userinfo(user_info_list)
+        # 传递 license_type 参数，只有 flexnet 才会生成公共产品
+        append_common_userinfo(user_info_list, license_type_from_json)
         transformed_data['UserInfo'] = user_info_list
     
     # 返回结果
@@ -3017,535 +3030,9 @@ class LicenseRecordViewSet(CustomModelViewSet):
     
     def list(self, request, *args, **kwargs):
         """
-        列表查询时自动更新已过期的License状态，并发送邮件提醒（30天、15天、7天各提醒一次）
-        注意：主要的定时检查由 django-crontab 在每天凌晨2点执行
-              这里的检查是作为补充，确保用户刷新列表时能获取最新状态
-        
-        重要优化：
-        - 过期状态更新同步执行（快速操作）
-        - 邮件发送异步执行（避免阻塞列表加载）
-        - 异常完全隔离（邮件失败不影响列表展示）
-        - 支持动态配置提醒天数（LICENSE_EXPIRATION_REMINDERS）
+        列表查询
         """
-        
-        # 检查是否启用自动检查
-        if not getattr(settings, 'LICENSE_AUTO_CHECK_ENABLED', True):
-            return super().list(request, *args, **kwargs)
-        
-        now = date.today()  # 使用 date 而不是 datetime，因为 end_time 是 DateField
-        logger.info(f"开始执行License自动检查和邮件提醒（list视图），当前日期: {now}")
-        
-        # 1. 【同步执行】自动更新已过期的License状态（快速操作，不阻塞）
-        try:
-            expired_records = LicenseRecord.objects.filter(
-                end_time__lt=now,
-                status=1  # 只更新当前状态为有效的
-            )
-            
-            expired_count = expired_records.count()
-            if expired_count > 0:
-                # 在更新前先获取需要发送邮件的记录列表（排除已发送过的）
-                expired_to_notify = []
-                for record in expired_records:
-                    extra_info = record.extra_info or {}
-                    if not extra_info.get('expired_email_sent', False):
-                        expired_to_notify.append(record)
-                
-                # 更新状态为已过期
-                expired_records.update(status=2)
-                logger.info(f"列表查询时自动更新了 {expired_count} 条已过期的 License 记录状态")
-                
-                # 【异步执行】发送过期提醒邮件（不阻塞列表加载）
-                self._send_async_emails(expired_to_notify, 'expired')
-        except Exception as e:
-            logger.error(f"更新过期License状态失败: {str(e)}")
-            # 即使更新失败，也不影响列表查询
-        
-        # 2. 【异步执行】检查即将过期的License，分别在30天、15天、7天发送提醒邮件
-        try:
-            email_manager = EmailManager()
-            
-            # 从配置中读取提醒规则（支持动态配置）
-            reminder_ranges = getattr(settings, 'LICENSE_EXPIRATION_REMINDERS', None)
-            if not reminder_ranges:
-                logger.warning('LICENSE_EXPIRATION_REMINDERS 配置未找到，跳过即将过期提醒')
-                return super().list(request, *args, **kwargs)
-            
-            logger.info(f"使用提醒规则: {len(reminder_ranges)} 个级别")
-            
-            # 按 application_id 分组收集需要提醒的记录
-            # key: application_id, value: {'records': [], 'days': days, 'lower': lower, 'upper': upper}
-            applications_to_notify = {}
-            
-            for reminder in reminder_ranges:
-                days = reminder['days']
-                lower = reminder['lower']
-                upper = reminder['upper']
-                
-                # 计算对应的日期范围（直接使用 end_time 字段查询，更可靠）
-                if lower == 0:
-                    # 7天提醒：[0, 7] -> end_time 在 [now, now+7天]
-                    end_date_lower = now + timedelta(days=lower)
-                    end_date_upper = now + timedelta(days=upper)
-                    expiring_records = LicenseRecord.objects.filter(
-                        end_time__gte=end_date_lower,
-                        end_time__lte=end_date_upper,
-                        status=1  # 有效状态
-                    )
-                else:
-                    # 30天和15天提醒：(lower, upper] -> end_time 在 (now+lower, now+upper]
-                    end_date_lower = now + timedelta(days=lower)
-                    end_date_upper = now + timedelta(days=upper)
-                    expiring_records = LicenseRecord.objects.filter(
-                        end_time__gt=end_date_lower,
-                        end_time__lte=end_date_upper,
-                        status=1  # 有效状态
-                    )
-                
-                expiring_count = expiring_records.count()
-                if expiring_count > 0:
-                    logger.info(f"发现 {expiring_count} 条需要在{days}天提醒的 License 记录（剩余天数范围: {lower}-{upper}）")
-                    for record in expiring_records:
-                        app_id = record.application.id
-                        if app_id not in applications_to_notify:
-                            applications_to_notify[app_id] = {
-                                'records': [],
-                                'days': days,
-                                'lower': lower,
-                                'upper': upper
-                            }
-                        applications_to_notify[app_id]['records'].append({
-                            'record': record,
-                            'days': days,
-                            'lower': lower,
-                            'upper': upper
-                        })
-            
-            # 【异步执行】按 application 分组发送邮件（不阻塞列表加载）
-            if applications_to_notify:
-                self._send_async_emails_by_application(applications_to_notify)
-                
-        except Exception as e:
-            logger.error(f"检查即将过期License失败: {str(e)}")
-            # 即使检查失败，也不影响列表查询
-        
-        # 调用父类的 list 方法（立即返回，不受邮件发送影响）
         return super().list(request, *args, **kwargs)
-    
-    def _send_async_emails(self, email_data_list, email_type):
-        """
-        异步发送邮件（不阻塞主线程）
-        :param email_data_list: 邮件数据列表
-        :param email_type: 'expired' 或 'expiring'
-        """
-        if not email_data_list:
-            return
-        
-        try:
-            # 创建后台线程异步发送邮件
-            thread = threading.Thread(
-                target=self._process_email_sending,
-                args=(email_data_list, email_type),
-                daemon=True  # 守护线程，主程序退出时自动终止
-            )
-            thread.start()
-            logger.info(f"已启动异步邮件发送线程，类型={email_type}, 数量={len(email_data_list)}")
-        except Exception as e:
-            logger.error(f"启动异步邮件发送线程失败: {str(e)}")
-    
-    def _send_async_emails_by_application(self, applications_to_notify):
-        """
-        按 application 分组异步发送邮件（避免重复发送）
-        :param applications_to_notify: {app_id: {'records': [...], 'days': days, ...}}
-        """
-        if not applications_to_notify:
-            return
-        
-        try:
-            # 创建后台线程异步发送邮件
-            thread = threading.Thread(
-                target=self._process_email_sending_by_application,
-                args=(applications_to_notify,),
-                daemon=True  # 守护线程，主程序退出时自动终止
-            )
-            thread.start()
-            logger.info(f"已启动按application分组的异步邮件发送线程，申请数量={len(applications_to_notify)}")
-        except Exception as e:
-            logger.error(f"启动按application分组的异步邮件发送线程失败: {str(e)}")
-    
-    def _process_email_sending(self, email_data_list, email_type):
-        """
-        实际处理邮件发送的逻辑（在后台线程中执行）
-        :param email_data_list: 邮件数据列表
-        :param email_type: 'expired' 或 'expiring'
-        """
-        from utils.email import EmailManager
-        from datetime import date
-        
-        now = date.today()
-        email_manager = EmailManager()
-        
-        logger.info(f"开始异步发送邮件，类型={email_type}, 总数={len(email_data_list)}")
-        
-        success_count = 0
-        fail_count = 0
-        
-        for item in email_data_list:
-            try:
-                if email_type == 'expired':
-                    # 过期邮件
-                    record = item
-                    extra_info = record.extra_info or {}
-                    
-                    if extra_info.get('expired_email_sent', False):
-                        logger.info(f"跳过已发送过期提醒邮件的记录: {record.application.serial_number}")
-                        continue
-                    
-                    application = LicenseApplication.objects.get(id=record.application.id)
-                    if not application.applicant_id:
-                        logger.warning(f"跳过发送邮件，申请人ID为空: {record.application.serial_number}")
-                        continue
-                    
-                    email_manager.license_expired_send_email(
-                        owner=application.applicant_id,
-                        application=application,
-                        end_time=record.end_time
-                    )
-                    
-                    extra_info['expired_email_sent'] = True
-                    record.extra_info = extra_info
-                    record.save(update_fields=['extra_info'])
-                    logger.info(f"✓ 已发送过期提醒邮件: {record.application.serial_number}")
-                    success_count += 1
-                    
-                elif email_type == 'expiring':
-                    # 即将过期邮件
-                    record = item['record']
-                    days = item['days']
-                    lower = item['lower']
-                    upper = item['upper']
-                    
-                    application = LicenseApplication.objects.get(id=record.application.id)
-                    if not application.applicant_id:
-                        logger.warning(f"跳过发送邮件，申请人ID为空: {record.application.serial_number}")
-                        continue
-                    
-                    user_info_list = application.user_info_list or []
-                    
-                    if len(user_info_list) > 0:
-                        # 产品组场景
-                        self._handle_product_group_reminder_async(
-                            record, application, email_manager, days, now, lower, upper
-                        )
-                    else:
-                        # 单产品场景
-                        self._handle_single_product_reminder_async(
-                            record, application, email_manager, days
-                        )
-                    success_count += 1
-                    
-            except Exception as e:
-                logger.error(f"✗ 发送邮件失败: {str(e)}")
-                fail_count += 1
-                continue
-        
-        logger.info(f"异步邮件发送完成，类型={email_type}, 成功={success_count}, 失败={fail_count}")
-    
-    def _process_email_sending_by_application(self, applications_to_notify):
-        """
-        按 application 分组处理邮件发送（避免重复发送）
-        :param applications_to_notify: {app_id: {'records': [...], 'days': days, 'lower': lower, 'upper': upper}}
-        """
-        from utils.email import EmailManager
-        from datetime import date
-        
-        now = date.today()
-        email_manager = EmailManager()
-        
-        logger.info(f"开始按application分组发送邮件，申请数量={len(applications_to_notify)}")
-        
-        success_count = 0
-        fail_count = 0
-        
-        for app_id, data in applications_to_notify.items():
-            try:
-                records = data['records']
-                days = data['days']
-                lower = data['lower']
-                upper = data['upper']
-                
-                if not records:
-                    continue
-                
-                # 获取第一个记录的 application（所有记录应该属于同一个 application）
-                first_record = records[0]['record']
-                application = LicenseApplication.objects.get(id=first_record.application.id)
-                
-                if not application.applicant_id:
-                    logger.warning(f"跳过发送邮件，申请人ID为空: {first_record.application.serial_number}")
-                    continue
-                
-                # 检查是否有 user_info_list（产品组场景）
-                user_info_list = application.user_info_list or []
-                
-                if len(user_info_list) > 0:
-                    # 产品组场景：收集所有需要提醒的产品
-                    all_products_to_remind = []
-                    
-                    for record_data in records:
-                        record = record_data['record']
-                        extra_info = record.extra_info or {}
-                        
-                        # 遍历 user_info_list 中的所有产品
-                        for idx, product_info in enumerate(user_info_list):
-                            product_name = product_info.get('Product', '')
-                            end_timestamp = product_info.get('Expirydate')
-                            
-                            if not product_name or not end_timestamp:
-                                continue
-                            
-                            # 解析产品结束时间
-                            try:
-                                if isinstance(end_timestamp, (int, float)):
-                                    product_end_time = datetime.fromtimestamp(end_timestamp / 1000).date()
-                                elif isinstance(end_timestamp, str):
-                                    product_end_time = datetime.strptime(end_timestamp, '%Y-%m-%d').date()
-                                else:
-                                    product_end_time = end_timestamp
-                            except (ValueError, TypeError):
-                                continue
-                            
-                            # 计算剩余天数
-                            product_remaining_days = (product_end_time - now).days
-                            
-                            # 判断是否在提醒范围内
-                            in_range = False
-                            if lower == 0:
-                                in_range = (lower <= product_remaining_days <= upper)
-                            else:
-                                in_range = (lower < product_remaining_days <= upper)
-                            
-                            if in_range:
-                                # 检查是否已发送
-                                email_key = f'expiring_{days}day_{idx}_{product_name}_email_sent'
-                                already_sent = extra_info.get(email_key, False)
-                                
-                                if not already_sent:
-                                    # 检查是否已经在本次循环中收集过
-                                    if not any(p['name'] == product_name and p['index'] == idx for p in all_products_to_remind):
-                                        all_products_to_remind.append({
-                                            'index': idx,
-                                            'name': product_name,
-                                            'remaining_days': product_remaining_days,
-                                            'email_key': email_key,
-                                            'record': record
-                                        })
-                    
-                    # 如果有产品需要提醒，发送一封邮件包含所有产品
-                    if all_products_to_remind:
-                        product_details = [{
-                            'name': p['name'],
-                            'remaining_days': p['remaining_days'],
-                            'start_time': p['record'].start_time,
-                            'end_time': p['record'].end_time
-                        } for p in all_products_to_remind]
-                        
-                        # 发送提醒邮件
-                        email_manager.license_expiring_soon_send_email(
-                            owner=application.applicant_id,
-                            application=application,
-                            end_time=first_record.end_time,
-                            remaining_days=days,
-                            product_details=product_details
-                        )
-                        
-                        # 标记每个产品已发送（在所有相关记录中标记）
-                        for product in all_products_to_remind:
-                            record = product['record']
-                            extra_info = record.extra_info or {}
-                            extra_info[product['email_key']] = True
-                            record.extra_info = extra_info
-                            record.save(update_fields=['extra_info'])
-                        
-                        product_names = ', '.join([p['name'] for p in all_products_to_remind])
-                        logger.info(f"✓ 已发送{days}天提醒邮件（产品组）: {first_record.application.serial_number}, 产品: {product_names}")
-                        success_count += 1
-                    else:
-                        logger.info(f"产品组中没有需要提醒的产品: {first_record.application.serial_number}")
-                else:
-                    # 单产品场景：为每条记录单独发送邮件
-                    for record_data in records:
-                        record = record_data['record']
-                        extra_info = record.extra_info or {}
-                        email_key = f'expiring_{days}day_email_sent'
-                        
-                        if extra_info.get(email_key, False):
-                            logger.info(f"跳过已发送{days}天提醒邮件的记录: {record.application.serial_number}")
-                            continue
-                        
-                        email_manager.license_expiring_soon_send_email(
-                            owner=application.applicant_id,
-                            application=application,
-                            end_time=record.end_time,
-                            remaining_days=record.remaining_days
-                        )
-                        
-                        extra_info[email_key] = True
-                        record.extra_info = extra_info
-                        record.save(update_fields=['extra_info'])
-                        logger.info(f"✓ 已发送{days}天提醒邮件: {record.application.serial_number}, 剩余{record.remaining_days}天")
-                        success_count += 1
-                        
-            except Exception as e:
-                logger.error(f"✗ 按application分组发送邮件失败: {str(e)}", exc_info=True)
-                fail_count += 1
-                continue
-        
-        logger.info(f"按application分组邮件发送完成，成功={success_count}, 失败={fail_count}")
-    
-    def _handle_single_product_reminder_async(self, record, application, email_manager, days):
-        """
-        处理单产品场景的邮件提醒（异步版本）
-        :param record: LicenseRecord 实例
-        :param application: LicenseApplication 实例
-        :param email_manager: EmailManager 实例
-        :param days: 剩余天数阈值（30/15/7）
-        """
-        extra_info = record.extra_info or {}
-        email_key = f'expiring_{days}day_email_sent'
-        
-        if extra_info.get(email_key, False):
-            logger.info(f"跳过已发送{days}天提醒邮件的记录: {record.application.serial_number}")
-            return
-        
-        logger.info(f"准备发送{days}天提醒邮件: {record.application.serial_number}, end_time={record.end_time}, remaining_days={record.remaining_days}")
-        
-        # 发送即将过期提醒邮件
-        email_manager.license_expiring_soon_send_email(
-            owner=application.applicant_id,
-            application=application,
-            end_time=record.end_time,
-            remaining_days=record.remaining_days
-        )
-        
-        # 标记已发送
-        extra_info[email_key] = True
-        record.extra_info = extra_info
-        record.save(update_fields=['extra_info'])
-        logger.info(f"✓ 已发送{days}天提醒邮件: {record.application.serial_number}, 剩余{record.remaining_days}天")
-    
-    def _handle_product_group_reminder_async(self, record, application, email_manager, days, now, lower, upper):
-        """
-        处理产品组场景的邮件提醒（异步版本）
-        检查每个产品的剩余天数，如果某个产品在提醒阈值范围内，则发送提醒
-        :param record: LicenseRecord 实例
-        :param application: LicenseApplication 实例
-        :param email_manager: EmailManager 实例
-        :param days: 剩余天数阈值（30/15/7）
-        :param now: 当前日期
-        :param lower: 下限
-        :param upper: 上限
-        """
-        from datetime import timedelta
-        
-        user_info_list = application.user_info_list or []
-        extra_info = record.extra_info or {}
-        
-        logger.info(f"处理产品组提醒: {record.application.serial_number}, 产品数量={len(user_info_list)}, 提醒天数={days}")
-        
-        # 收集需要提醒的产品信息
-        products_to_remind = []
-        
-        for idx, product_info in enumerate(user_info_list):
-            product_name = product_info.get('Product', '')  # ✅ 注意：字段名是 Product（大写P）
-            end_timestamp = product_info.get('Expirydate')  # ✅ 注意：字段名是 Expirydate（时间戳）
-            
-            if not product_name:
-                logger.info(f"产品 {idx} 没有 Product 名称，跳过")
-                continue
-            
-            if not end_timestamp:
-                logger.info(f"产品 {idx} ({product_name}) 没有 Expirydate，跳过")
-                continue
-            
-            # 解析产品结束时间（从毫秒时间戳转换为 date 对象）
-            try:
-                if isinstance(end_timestamp, (int, float)):
-                    # 毫秒时间戳 -> 秒 -> date 对象
-                    product_end_time = datetime.fromtimestamp(end_timestamp / 1000).date()
-                elif isinstance(end_timestamp, str):
-                    # 如果是字符串格式，尝试解析
-                    product_end_time = datetime.strptime(end_timestamp, '%Y-%m-%d').date()
-                else:
-                    product_end_time = end_timestamp
-            except (ValueError, TypeError) as e:
-                logger.warning(f"无法解析产品结束时间: {end_timestamp}, 错误: {str(e)}")
-                continue
-            
-            # 计算产品剩余天数
-            product_remaining_days = (product_end_time - now).days
-            
-            logger.info(f"产品 {idx} ({product_name}): end_time={product_end_time}, 剩余天数={product_remaining_days}, 检查范围({lower}-{upper})")
-            
-            # 判断该产品的剩余天数是否在提醒范围内
-            in_range = False
-            if lower == 0:
-                # 7天提醒：[0, 7]
-                in_range = (lower <= product_remaining_days <= upper)
-            else:
-                # 30天和15天提醒：(lower, upper]
-                in_range = (lower < product_remaining_days <= upper)
-            
-            logger.info(f"产品 {idx} ({product_name}): 是否在范围内={in_range}")
-            
-            if in_range:
-                # 检查是否已经为该产品和该天数发送过提醒
-                email_key = f'expiring_{days}day_{idx}_{product_name}_email_sent'
-                already_sent = extra_info.get(email_key, False)
-                
-                logger.info(f"产品 {idx} ({product_name}): 已发送标记={already_sent}")
-                
-                if not already_sent:
-                    logger.info(f"产品 {product_name} 需要提醒: 剩余{product_remaining_days}天, 范围({lower}-{upper})")
-                    products_to_remind.append({
-                        'index': idx,
-                        'name': product_name,
-                        'remaining_days': product_remaining_days,
-                        'email_key': email_key
-                    })
-        
-        # 如果有产品需要提醒，发送邮件
-        if products_to_remind:
-            # 构建产品信息列表用于邮件内容
-            product_details = []
-            for product in products_to_remind:
-                product_details.append({
-                    'name': product['name'],
-                    'remaining_days': product['remaining_days'],
-                    'start_time': record.start_time,
-                    'end_time': record.end_time
-                })
-            
-            # 发送提醒邮件（传入产品信息列表）
-            email_manager.license_expiring_soon_send_email(
-                owner=application.applicant_id,
-                application=application,
-                end_time=record.end_time,
-                remaining_days=days,  # 使用当前阈值
-                product_details=product_details  # 新增参数：具体产品信息
-            )
-            
-            # 标记每个产品已发送
-            for product in products_to_remind:
-                extra_info[product['email_key']] = True
-            
-            record.extra_info = extra_info
-            record.save(update_fields=['extra_info'])
-            
-            product_names = ', '.join([p['name'] for p in products_to_remind])
-            logger.info(f"✓ 已发送{days}天提醒邮件（产品组）: {record.application.serial_number}, 产品: {product_names}")
-        else:
-            logger.info(f"产品组中没有需要提醒的产品: {record.application.serial_number}")
 
     
     @action(methods=['get'], detail=False)

@@ -65,3 +65,5 @@ django-celery-results
 eventlet
 watchdog
 django_crontab
+gunicorn
+supervisor

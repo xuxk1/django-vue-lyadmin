@@ -46,7 +46,7 @@ REDIS_URL = f'redis://:{REDIS_PASSWORD or ""}@{REDIS_HOST}:{REDIS_PORT}'
 SSH_HOST = '172.11.130.25'
 SSH_USER = 'sqa'
 SSH_PASSWORD = 'Phlexing_2019'
-SSH_KEY_FILE = '/users/G01/efficiency_portal/.ssh/id_rsa.pub'
+SSH_KEY_FILE = '/users/G01/efficiency_portal/.ssh/id_rsa'
 SSH_REMOTE_TEMPLATE_DIR = '/TestHub/sqa/Platform/license'
 SSH_REMOTE_SCRIPT_PATH= '/users/G02/sqa/xxk/lmcrypt_new'
 
@@ -217,7 +217,7 @@ ALIPAY_PUBLIC_KEY_PATH = os.path.join(BASE_DIR, 'key', 'alipay_public_key.pem')
 # ************** Bitanswer License 配置  ************** #
 # ================================================= #
 
-BITANSWER_API_BASE_URL = 'http://172.16.30.24:80'  # Bitanswer API基础地址
+BITANSWER_API_BASE_URL = 'http://eee.phlexing.com'  # Bitanswer API基础地址
 BITANSWER_BITKEY = 'your-bitkey-here'  # Bitanswer API的bitkey，固定值
 BITANSWER_TEMPLATE_NAME = 'test_api'
 BITANSWER_BUSINESS_NAME = 'test_linux'

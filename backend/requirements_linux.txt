@@ -64,3 +64,5 @@ django-celery-beat
 django-celery-results
 django_crontab
 watchdog
+gunicorn
+supervisor

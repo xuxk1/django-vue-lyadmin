@@ -543,6 +543,30 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 JSON_FILE_PATH = r"D:\eladmin"
 
 # ================================================= #
+# ******************** License文件扫描配置 ******************** #
+# ================================================= #
+
+# License文件扫描目录（LIC文件存放的根目录）
+LICENSE_SCAN_DIRECTORY =  '/efficiency/license'
+
+# License过期阈值天数（默认90天）
+LICENSE_EXPIRY_THRESHOLD_DAYS = 30
+
+# 默认收件人
+LICENSE_DEFAULT_RECIPIENT = 'xuxiaokui'
+
+# 默认抄送人
+LICENSE_DEFAULT_EXPIRED_CC = 'xuxiaokui'
+
+# 收件人配置
+LICENSE_EMAIL_RECIPIENTS = [
+    'xuxiaokui@phlexing.com',
+    'zhuxueting@phlexing.com',
+]
+
+LICENSE_FILE_WATCHER = '/tmp/lylicense_file_watcher.lock'
+
+# ================================================= #
 # ******************** License过期提醒配置 ******************** #
 # ================================================= #
 # License即将过期提醒规则（单位：天）
@@ -569,6 +593,9 @@ CRONJOBS = [
 
     # 每5分钟执行一次（开发测试用，正式环境请注释掉）
     ('*/5 * * * *', 'apps.lylicense.cron.check_license_expiration_job', '>> /var/log/license_cron_debug.log 2>&1'),
+
+    # 兼容老的license文件过期提醒，每5分钟执行一次（开发测试用，正式环境请注释掉）
+    ('*/5 * * * *', 'apps.lylicense.scan_licenses.scan_license_file_expiration_job', '>> /var/log/license_cron_debug.log 2>&1'),
 ]
 
 # 环境变量前缀
