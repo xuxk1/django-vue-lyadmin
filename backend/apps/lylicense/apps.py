@@ -50,23 +50,25 @@ class LylicenseConfig(AppConfig):
 
         # 【关键修复】避免在 Gunicorn 多进程环境下重复启动
         # 使用文件锁确保只有一个 worker 启动监听器（仅 Linux 生产环境）
-        lock_fd = None
-        try:
-            import fcntl
-            lock_file_path = LICENSE_FILE_WATCHER
-            lock_fd = os.open(lock_file_path, os.O_CREAT | os.O_RDWR)
-            # 尝试获取排他锁，非阻塞
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            # 成功获取锁，说明我们是第一个 worker，可以启动监听器
-            logger.info(f"成功获取文件锁，Worker PID={os.getpid()} 将启动文件监听器")
-            # 保存锁文件描述符，防止被垃圾回收
-            globals()['_file_watcher_lock_fd'] = lock_fd
-        except (OSError, IOError):
-            # 无法获取锁，说明其他 worker 已经启动了监听器
-            logger.info(f"无法获取文件锁，Worker PID={os.getpid()} 跳过文件监听器启动")
-            if 'lock_fd' in locals():
-                os.close(lock_fd)
-            return
+        # Windows 开发环境直接跳过此检查
+        if os.name != 'nt':  # nt 表示 Windows
+            lock_fd = None
+            try:
+                import fcntl
+                lock_file_path = LICENSE_FILE_WATCHER
+                lock_fd = os.open(lock_file_path, os.O_CREAT | os.O_RDWR)
+                # 尝试获取排他锁，非阻塞
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # 成功获取锁，说明我们是第一个 worker，可以启动监听器
+                logger.info(f"成功获取文件锁，Worker PID={os.getpid()} 将启动文件监听器")
+                # 保存锁文件描述符，防止被垃圾回收
+                globals()['_file_watcher_lock_fd'] = lock_fd
+            except (OSError, IOError):
+                # 无法获取锁，说明其他 worker 已经启动了监听器
+                logger.info(f"无法获取文件锁，Worker PID={os.getpid()} 跳过文件监听器启动")
+                if 'lock_fd' in locals():
+                    os.close(lock_fd)
+                return
 
         # 避免在 Django runserver 自动重载时重复执行
         # 注意：Gunicorn 不会设置 RUN_MAIN，所以这个检查只针对 runserver 模式

@@ -198,16 +198,89 @@ export function createUser(data) {
    - 检查 Network 面板的 API 请求和响应。
 3. **API 文档**: 访问 `/swagger/` 查看自动生成的接口文档。
 
-## 8. 部署
+## 8. 部署与启动
 
-1. **静态文件收集**:
-   ```bash
-   python manage.py collectstatic
-   ```
-2. **服务启动**:
-   - 后端: 使用 Gunicorn + Nginx (生产环境) 或 `daphne` (如果需要 WebSocket)。
-   - 前端: 构建 `npm run build`，并将 `dist` 目录部署到 Nginx。
-   - Celery: 启动 Worker 和 Beat 服务处理异步任务。
+### 8.1 开发环境启动
+
+#### 后端启动
+```bash
+cd backend
+python manage.py runserver
+```
+
+如果需要 WebSocket 支持：
+```bash
+daphne application.asgi:application
+```
+
+#### 定时任务（使用 django-crontab）
+```bash
+# 注册定时任务到系统
+python manage.py crontab add
+
+# 查看已注册的定时任务
+python manage.py crontab show
+
+# 删除所有定时任务
+python manage.py crontab remove
+
+# 手动执行 License 过期检查（测试用）
+python manage.py check_license_expiration
+
+# 强制重新发送所有提醒（测试用）
+python manage.py check_license_expiration --force
+```
+
+**注意**: 定时任务配置在 `application/settings.py` 的 `CRONJOBS` 中，默认每天凌晨2点执行。
+
+#### 前端启动
+```bash
+cd frontend
+npm run dev
+```
+
+### 8.2 正式环境启动 (使用 Supervisor)
+
+在正式环境中，推荐使用 Supervisor 来管理 Django 应用进程。
+
+#### 通过 Supervisor 管理服务
+
+```bash
+# 查看服务状态
+sudo supervisorctl status
+
+# 重启服务
+sudo supervisorctl restart lyadmin
+
+# 或者先停止再启动
+sudo supervisorctl stop lyadmin
+sudo supervisorctl start lyadmin
+```
+
+#### 其他常用 Supervisor 命令
+
+```bash
+# 重新加载配置
+sudo supervisorctl reread
+sudo supervisorctl update
+
+# 查看所有受管进程
+sudo supervisorctl status all
+```
+
+### 8.3 静态文件收集
+
+在部署前需要收集静态文件：
+```bash
+python manage.py collectstatic
+```
+
+### 8.4 生产环境服务架构
+
+- **后端**: 使用 Gunicorn + Nginx (生产环境) 或 `daphne` (如果需要 WebSocket)。
+- **前端**: 构建 `npm run build`，并将 `dist` 目录部署到 Nginx。
+- **定时任务**: 使用 django-crontab 管理定时任务，通过系统 cron/计划任务执行。
+- **进程管理**: 使用 Supervisor 管理所有后台进程。
 
 ---
 

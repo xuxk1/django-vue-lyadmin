@@ -19,7 +19,7 @@ def scan_license_file_expiration_job():
 
     try:
         # 调用你的管理命令
-        call_command('license_file_scanner', force=False)
+        call_command('license_file_scanner')
         logger.info('License 过期检查定时任务执行完成')
     except Exception as e:
         logger.error(f'License 过期检查定时任务执行失败: {e}', exc_info=True)

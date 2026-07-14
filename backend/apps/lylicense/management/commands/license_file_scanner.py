@@ -17,12 +17,18 @@ logger = logging.getLogger(__name__)
 class LicenseFileScanner:
     """License文件扫描器"""
 
-    def __init__(self, scan_directory: str = None):
+    def __init__(self, scan_directory: str = None, days_threshold: int = None):
         self.scan_directory = scan_directory or getattr(settings, 'LICENSE_SCAN_DIRECTORY', None)
         if not self.scan_directory:
             raise ValueError("未配置 LICENSE_SCAN_DIRECTORY")
 
-        self.days_threshold = getattr(settings, 'LICENSE_EXPIRY_THRESHOLD_DAYS', 90)
+        # 优先使用传入参数，否则从配置读取
+        if days_threshold is not None:
+            self.days_threshold = days_threshold
+        else:
+            self.days_threshold = getattr(settings, 'LICENSE_EXPIRY_THRESHOLD_DAYS', 30)
+
+        logger.info(f"License扫描器初始化: 目录={self.scan_directory}, 阈值={self.days_threshold}天")
 
     def parse_license_file(self, file_path: str) -> List[Dict]:
         """解析单个LIC文件，提取所有授权行"""
@@ -526,7 +532,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--scan-dir', type=str, help='扫描目录，覆盖settings配置')
-        parser.add_argument('--days', type=int, default=90, help='过期阈值天数，默认90天')
+        parser.add_argument('--days', type=int, help='过期阈值天数，默认使用settings配置')
         parser.add_argument('--dry-run', action='store_true', help='试运行模式，只打印不发送邮件')
 
     def handle(self, *args, **options):
@@ -541,18 +547,25 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR('未配置 LICENSE_SCAN_DIRECTORY'))
                 return
 
-            days = options.get('days', 90)
+            # 获取阈值：命令行参数 > 配置文件 > 默认30天
+            days = options.get('days')
+            if days is None:
+                days = getattr(settings, 'LICENSE_EXPIRY_THRESHOLD_DAYS', 30)
+
             dry_run = options.get('dry_run', False)
 
             self.stdout.write(f'扫描目录: {scan_dir}')
             self.stdout.write(f'阈值天数: {days}天')
+            if options.get('days'):
+                self.stdout.write(f'  (来源: 命令行参数)')
+            else:
+                self.stdout.write(f'  (来源: 配置文件)')
             self.stdout.write(f'试运行模式: {"是" if dry_run else "否"}')
             self.stdout.write('-' * 60)
 
-            # 1. 扫描LIC文件
+            # 1. 扫描LIC文件 - 传入阈值参数
             self.stdout.write('\n[步骤1] 扫描LIC文件...')
-            scanner = LicenseFileScanner(scan_dir)
-            scanner.days_threshold = days
+            scanner = LicenseFileScanner(scan_dir, days_threshold=days)
             warning_files = scanner.scan()
 
             total_files = len(warning_files)

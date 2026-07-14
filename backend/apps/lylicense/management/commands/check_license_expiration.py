@@ -4,6 +4,7 @@ License过期检查和邮件提醒定时任务
 """
 from django.core.management.base import BaseCommand
 from datetime import datetime, timedelta, date
+from django.utils import timezone
 from apps.lylicense.models import LicenseRecord, LicenseApplication
 from utils.email import EmailManager
 from django.conf import settings
@@ -88,6 +89,9 @@ class Command(BaseCommand):
         try:
             now = date.today()
             
+            # 0. 【关键】先更新所有记录的 remaining_days 字段，确保数据准确
+            self._update_remaining_days(now)
+            
             # 1. 自动更新已过期的License状态
             expired_count = self._update_expired_records(now, force_send)
             
@@ -96,6 +100,7 @@ class Command(BaseCommand):
             
             self.stdout.write(self.style.SUCCESS('=' * 60))
             self.stdout.write(self.style.SUCCESS(f'任务执行完成！'))
+            self.stdout.write(self.style.SUCCESS(f'- 更新剩余天数: 已完成'))
             self.stdout.write(self.style.SUCCESS(f'- 更新过期记录: {expired_count} 条'))
             self.stdout.write(self.style.SUCCESS(f'- 发送即将过期提醒: {expiring_count} 条'))
             self.stdout.write(self.style.SUCCESS('=' * 60))
@@ -104,6 +109,60 @@ class Command(BaseCommand):
             logger.error(f'License过期检查任务执行失败: {str(e)}', exc_info=True)
             self.stdout.write(self.style.ERROR(f'任务执行失败: {str(e)}'))
             raise
+
+    def _update_remaining_days(self, now):
+        """
+        更新所有有效License记录的剩余天数字段
+        确保 remaining_days 字段与实际日期同步
+        
+        Args:
+            now: 当前日期
+        """
+        self.stdout.write('\n[步骤0] 更新剩余天数字段...')
+        
+        try:
+            # 更新状态为有效(1)和即将到期(3)的记录
+            # status=2(已过期)和status=0(已撤销)不需要更新
+            valid_records = LicenseRecord.objects.filter(status__in=[1, 3])
+            total_count = valid_records.count()
+            
+            if total_count == 0:
+                self.stdout.write('没有需要更新的记录')
+                return
+            
+            updated_count = 0
+            skipped_count = 0
+            
+            for record in valid_records:
+                # 计算新的剩余天数
+                if record.end_time:
+                    delta = record.end_time - now
+                    new_remaining_days = max(0, delta.days)
+                    
+                    # 只有当值发生变化时才更新
+                    if record.remaining_days != new_remaining_days:
+                        # 使用 update 方法直接更新数据库，同时更新 update_datetime
+                        # 注意：update() 不会触发 auto_now，需要手动指定
+                        LicenseRecord.objects.filter(id=record.id).update(
+                            remaining_days=new_remaining_days,
+                            update_datetime=timezone.now()
+                        )
+                        updated_count += 1
+                        self.stdout.write(f'✓ {record.application.serial_number}: {record.remaining_days}天 → {new_remaining_days}天')
+                    else:
+                        skipped_count += 1
+            
+            if updated_count > 0:
+                self.stdout.write(self.style.SUCCESS(f'✓ 已更新 {updated_count}/{total_count} 条记录的剩余天数'))
+                logger.info(f'License剩余天数更新完成: 总数={total_count}, 更新={updated_count}, 未变化={skipped_count}')
+            else:
+                self.stdout.write(self.style.WARNING(f'⚠ 无需更新剩余天数（{skipped_count} 条数据未变化）'))
+                logger.info(f'License剩余天数无需更新: 总数={total_count}, 未变化={skipped_count}')
+            
+        except Exception as e:
+            logger.error(f'更新剩余天数失败: {str(e)}', exc_info=True)
+            # 不抛出异常，继续执行后续任务
+            self.stdout.write(self.style.WARNING(f'⚠ 更新剩余天数失败，但将继续执行: {str(e)}'))
 
     def _update_expired_records(self, now, force_send=False):
         """
@@ -120,7 +179,7 @@ class Command(BaseCommand):
         
         expired_records = LicenseRecord.objects.filter(
             end_time__lt=now,
-            status=1  # 只更新当前状态为有效的
+            status__in=[1, 3]  # 有效状态和即将到期状态都可能已过期
         )
         
         expired_count = expired_records.count()
@@ -211,7 +270,7 @@ class Command(BaseCommand):
                 expiring_records = LicenseRecord.objects.filter(
                     end_time__gte=end_date_lower,
                     end_time__lte=end_date_upper,
-                    status=1  # 有效状态
+                    status__in=[1, 3]  # 有效状态和即将到期状态
                 )
             else:
                 # 30天和15天提醒：(lower, upper] -> end_time 在 (now+lower, now+upper]
@@ -220,7 +279,7 @@ class Command(BaseCommand):
                 expiring_records = LicenseRecord.objects.filter(
                     end_time__gt=end_date_lower,
                     end_time__lte=end_date_upper,
-                    status=1  # 有效状态
+                    status__in=[1, 3]  # 有效状态和即将到期状态
                 )
             
             expiring_count = expiring_records.count()

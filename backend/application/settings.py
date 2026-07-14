@@ -549,6 +549,8 @@ JSON_FILE_PATH = r"D:\eladmin"
 # License文件扫描目录（LIC文件存放的根目录）
 LICENSE_SCAN_DIRECTORY =  '/efficiency/license'
 
+UPD_SCAN_DIRECTORY = '/tmp/bitanswer_license'
+
 # License过期阈值天数（默认90天）
 LICENSE_EXPIRY_THRESHOLD_DAYS = 30
 
@@ -591,11 +593,17 @@ CRONJOBS = [
     # 每天凌晨2点执行
     ('0 2 * * *', 'apps.lylicense.cron.check_license_expiration_job', '>> /var/log/license_cron.log 2>&1'),
 
+    # 每天凌晨2点执行更新License Record表中remaining_days字段
+    ('0 2 * * *', 'apps.lylicense.update_remaining_days.update_remaining_days_job', '>> /var/log/update_remaining_days.log 2>&1'),
+
     # 每5分钟执行一次（开发测试用，正式环境请注释掉）
     ('*/5 * * * *', 'apps.lylicense.cron.check_license_expiration_job', '>> /var/log/license_cron_debug.log 2>&1'),
 
     # 兼容老的license文件过期提醒，每5分钟执行一次（开发测试用，正式环境请注释掉）
-    ('*/5 * * * *', 'apps.lylicense.scan_licenses.scan_license_file_expiration_job', '>> /var/log/license_cron_debug.log 2>&1'),
+    ('*/5 * * * *', 'apps.lylicense.scan_flexnet_licenses.scan_license_file_expiration_job', '>> /var/log/license_cron_debug.log 2>&1'),
+
+    # 兼容老的license文件过期提醒，每5分钟执行一次（开发测试用，正式环境请注释掉）
+    ('*/5 * * * *', 'apps.lylicense.scan_bitanswer_licenses.scan_bitanswer_license_file_expiration_job', '>> /var/log/license_cron_debug.log 2>&1'),
 ]
 
 # 环境变量前缀
