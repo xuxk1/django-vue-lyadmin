@@ -217,6 +217,26 @@ export function reqExpost (method, url, params) {
     responseType: 'blob' // 表明返回服务器返回的数据类型
   }).then(res => res.data);
 }
+// 文件下载（携带登录 token，以 blob 形式返回，用于附件下载等场景）
+export function downloadFile (opt) {
+    let token = getStorage('logintoken')
+    return new Promise((resolve, reject) => {
+        request({
+            url: url + opt.url,
+            method: opt.method || 'GET',
+            headers: {
+                Authorization: 'JWT ' + token,
+            },
+            params: opt.params,
+            responseType: 'blob'
+        }).then(res => {
+            resolve(res.data)
+        }).catch(err => {
+            reject(err)
+        })
+    })
+}
+
 // 上传图片
 export function uploadImg (param) {
     let formData = new FormData()

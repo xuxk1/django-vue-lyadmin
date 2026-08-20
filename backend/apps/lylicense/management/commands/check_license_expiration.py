@@ -112,57 +112,98 @@ class Command(BaseCommand):
 
     def _update_remaining_days(self, now):
         """
-        更新所有有效License记录的剩余天数字段
-        确保 remaining_days 字段与实际日期同步
+        更新所有有效License记录的剩余天数字段，并同步更新状态
+        确保 remaining_days 和 status 字段与实际日期同步
+        
+        状态同步规则：
+          - remaining_days == 0  → status=2 (已过期)
+          - 0 < remaining_days <= 阈值  → status=3 (即将到期)
+          - remaining_days > 阈值  → status=1 (有效)
+          - status=0 (已撤销) 不做修改
         
         Args:
             now: 当前日期
         """
-        self.stdout.write('\n[步骤0] 更新剩余天数字段...')
+        self.stdout.write('\n[步骤0] 更新剩余天数及状态字段...')
+        
+        # 从配置中读取即将到期阈值天数，默认30天
+        threshold_days = getattr(settings, 'LICENSE_EXPIRY_THRESHOLD_DAYS', 30)
         
         try:
-            # 更新状态为有效(1)和即将到期(3)的记录
-            # status=2(已过期)和status=0(已撤销)不需要更新
-            valid_records = LicenseRecord.objects.filter(status__in=[1, 3])
+            # 更新状态为有效(1)、已过期(2)和即将到期(3)的记录
+            # status=0(已撤销)不做任何修改
+            valid_records = LicenseRecord.objects.filter(status__in=[1, 2, 3])
             total_count = valid_records.count()
             
             if total_count == 0:
                 self.stdout.write('没有需要更新的记录')
                 return
             
-            updated_count = 0
+            updated_days_count = 0
+            updated_status_count = 0
             skipped_count = 0
+            status_names = {1: '有效', 2: '已过期', 3: '即将到期'}
             
             for record in valid_records:
+                if not record.end_time:
+                    skipped_count += 1
+                    continue
+                
                 # 计算新的剩余天数
-                if record.end_time:
-                    delta = record.end_time - now
-                    new_remaining_days = max(0, delta.days)
+                delta = record.end_time - now
+                new_remaining_days = max(0, delta.days)
+                
+                # 根据剩余天数计算应有的状态
+                if new_remaining_days == 0:
+                    new_status = 2  # 已过期
+                elif new_remaining_days <= threshold_days:
+                    new_status = 3  # 即将到期
+                else:
+                    new_status = 1  # 有效
+                
+                # 判断是否需要更新
+                days_changed = record.remaining_days != new_remaining_days
+                status_changed = record.status != new_status
+                
+                if days_changed or status_changed:
+                    update_fields = {
+                        'remaining_days': new_remaining_days,
+                        'status': new_status,
+                        'update_datetime': timezone.now(),
+                    }
+                    LicenseRecord.objects.filter(id=record.id).update(**update_fields)
                     
-                    # 只有当值发生变化时才更新
-                    if record.remaining_days != new_remaining_days:
-                        # 使用 update 方法直接更新数据库，同时更新 update_datetime
-                        # 注意：update() 不会触发 auto_now，需要手动指定
-                        LicenseRecord.objects.filter(id=record.id).update(
-                            remaining_days=new_remaining_days,
-                            update_datetime=timezone.now()
-                        )
-                        updated_count += 1
-                        self.stdout.write(f'✓ {record.application.serial_number}: {record.remaining_days}天 → {new_remaining_days}天')
-                    else:
-                        skipped_count += 1
+                    changes = []
+                    if days_changed:
+                        changes.append(f'天数: {record.remaining_days}→{new_remaining_days}')
+                        updated_days_count += 1
+                    if status_changed:
+                        changes.append(f'状态: {status_names.get(record.status, record.status)}→{status_names.get(new_status, new_status)}')
+                        updated_status_count += 1
+                    
+                    self.stdout.write(f'✓ {record.application.serial_number}: {" | ".join(changes)}')
+                else:
+                    skipped_count += 1
             
-            if updated_count > 0:
-                self.stdout.write(self.style.SUCCESS(f'✓ 已更新 {updated_count}/{total_count} 条记录的剩余天数'))
-                logger.info(f'License剩余天数更新完成: 总数={total_count}, 更新={updated_count}, 未变化={skipped_count}')
+            if updated_days_count > 0 or updated_status_count > 0:
+                self.stdout.write(self.style.SUCCESS(
+                    f'✓ 已更新: 天数变更 {updated_days_count} 条, '
+                    f'状态变更 {updated_status_count} 条, '
+                    f'未变化 {skipped_count} 条（共 {total_count} 条）'
+                ))
+                logger.info(
+                    f'License剩余天数及状态更新完成: '
+                    f'总数={total_count}, 天数变更={updated_days_count}, '
+                    f'状态变更={updated_status_count}, 未变化={skipped_count}'
+                )
             else:
-                self.stdout.write(self.style.WARNING(f'⚠ 无需更新剩余天数（{skipped_count} 条数据未变化）'))
-                logger.info(f'License剩余天数无需更新: 总数={total_count}, 未变化={skipped_count}')
+                self.stdout.write(self.style.WARNING(f'⚠ 无需更新剩余天数及状态（{skipped_count} 条数据未变化）'))
+                logger.info(f'License剩余天数及状态无需更新: 总数={total_count}, 未变化={skipped_count}')
             
         except Exception as e:
-            logger.error(f'更新剩余天数失败: {str(e)}', exc_info=True)
+            logger.error(f'更新剩余天数及状态失败: {str(e)}', exc_info=True)
             # 不抛出异常，继续执行后续任务
-            self.stdout.write(self.style.WARNING(f'⚠ 更新剩余天数失败，但将继续执行: {str(e)}'))
+            self.stdout.write(self.style.WARNING(f'⚠ 更新剩余天数及状态失败，但将继续执行: {str(e)}'))
 
     def _update_expired_records(self, now, force_send=False):
         """

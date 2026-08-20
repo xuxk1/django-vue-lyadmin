@@ -1,5 +1,5 @@
 import axios from 'axios';
-import {reqExpost,ajaxGet,ajaxPost,ajaxDelete,ajaxPut,ajaxPatch,uploadImg,ajaxGetDetailByID} from './request';
+import {reqExpost,ajaxGet,ajaxPost,ajaxDelete,ajaxPut,ajaxPatch,uploadImg,ajaxGetDetailByID,downloadFile} from './request';
 import {url} from './url';
 
 // 获取登录页的信息
@@ -130,6 +130,8 @@ export const apiSystemUserAdd = params => ajaxPost({url: `system/user/`,params})
 export const apiSystemUserEdit = params => ajaxPut({url: `system/user/`,params})
 //管理员管理-删除
 export const apiSystemUserDelte = params => ajaxDelete({url: `system/user/`,params})
+//获取所有用户列表（不限身份类型），用于工作流等场景的用户选择
+export const apiSystemAllUser = params => ajaxGet({url: `system/user/all_users/`,params})
 
 /**
  *日志管理
@@ -404,6 +406,13 @@ export const workflowTypeAdd= params => ajaxPost({url: `workflow/workflow-type/`
 export const workflowTypeUpdate= params => ajaxPut({url: `workflow/workflow-type/`,params})
 // 流程类型 删除
 export const workflowTypeDelete= params => ajaxDelete({url: `workflow/workflow-type/`,params})
+// 获取流程类型的表单字段列表
+export const getWorkflowTypeFormFields = id => ajaxGet({url: `workflow/workflow-type/${id}/form-fields/`})
+// 检查当前用户是否有权限发起该流程类型
+export const checkWorkflowTypeInitiatorPermission = id => ajaxGet({url: `workflow/workflow-type/${id}/check-initiator-permission/`})
+// 发起流程前自动填写（按流程配置中开启"自动回填"开关的字段异步计算回填值；
+// 路径类字段按"共享路径+软件包名称"拼接并校验文件真实存在，不存在时返回 need_confirm 需弹窗确认实际路径）
+export const workflowTypeAutoFillForm = (id, params) => ajaxPost({url: `workflow/workflow-type/${id}/auto-fill-form/`,params})
 
 // 流程步骤列表
 export const workflowStep= params => ajaxGet({url: `workflow/workflow-step/`,params})
@@ -416,6 +425,15 @@ export const workflowStepDelete= params => ajaxDelete({url: `workflow/workflow-s
 // 流程步骤 批量更新
 export const workflowStepBatchUpdate= params => ajaxPost({url: `workflow/workflow-step/batch_update/`,params})
 
+// 自定义审批组列表
+export const approvalGroup= params => ajaxGet({url: `workflow/approval-group/`,params})
+// 自定义审批组 新增
+export const approvalGroupAdd= params => ajaxPost({url: `workflow/approval-group/`,params})
+// 自定义审批组 编辑
+export const approvalGroupUpdate= params => ajaxPut({url: `workflow/approval-group/`,params})
+// 自定义审批组 删除
+export const approvalGroupDelete= params => ajaxDelete({url: `workflow/approval-group/`,params})
+
 // 抄送配置列表
 export const workflowCC= params => ajaxGet({url: `workflow/workflow-cc/`,params})
 // 抄送配置 新增
@@ -427,10 +445,15 @@ export const workflowCCDelete= params => ajaxDelete({url: `workflow/workflow-cc/
 
 // 流程实例列表
 export const workflowInstance= params => ajaxGet({url: `workflow/workflow-instance/`,params})
+// 流程实例 详情
+export const workflowInstanceDetail= (id) => ajaxGet({url: `workflow/workflow-instance/${id}/`,params: {}})
 // 流程实例 创建
 export const workflowInstanceCreate= params => ajaxPost({url: `workflow/workflow-instance/`,params})
 // 流程实例 提交
+// 提交失败且返回 data.need_confirm 时，需弹窗让用户确认软件包路径（包安全扫描）
 export const workflowInstanceSubmit= (id) => ajaxPost({url: `workflow/workflow-instance/${id}/submit/`,params: {}})
+// 确认包扫描路径（提交时共享路径未找到软件包，用户确认实际路径后触发复制与扫描）
+export const workflowConfirmScanPath= (id, params) => ajaxPost({url: `workflow/workflow-instance/${id}/confirm_scan_path/`,params})
 // 流程实例 撤回
 export const workflowInstanceWithdraw= (id) => ajaxPost({url: `workflow/workflow-instance/${id}/withdraw/`,params: {}})
 // 流程实例 重新发起（已撤回的流程）
@@ -448,8 +471,66 @@ export const workflowTaskApprove= (id, data) => ajaxPost({url: `workflow/workflo
 export const workflowTaskReject= (id, data) => ajaxPost({url: `workflow/workflow-task/${id}/reject/`,params: data})
 // 审批任务 退回
 export const workflowTaskReturn= (id, data) => ajaxPost({url: `workflow/workflow-task/${id}/return_back/`,params: data})
+// 申请人确认
+export const workflowTaskConfirm= (id, data) => ajaxPost({url: `workflow/workflow-task/${id}/confirm/`,params: data})
 // 获取我的待办任务列表
 export const getMyPendingTasks = params => ajaxGet({url: `workflow/workflow-task/`,params})
+// 获取我的已办任务列表
+export const getMyHandledTasks = params => ajaxGet({url: `workflow/workflow-task/`,params: {handled: 1, ...params}})
+
+// 审批评论 新增（支持 FormData 携带附件 files，评论后邮件通知当前待审批节点的审批人）
+export const workflowCommentAdd = params => ajaxPost({url: `workflow/workflow-comment/`,params})
+// 审批评论 附件下载（返回 blob）
+export const workflowCommentDownload = params => downloadFile({url: `workflow/workflow-comment/${params.id}/download/`, params: {name: params.name}})
 
 // 流程日志列表
 export const workflowLog= params => ajaxGet({url: `workflow/workflow-log/`,params})
+
+/**
+ * Phlexing知识库SSO
+ * */
+// 获取Phlexing配置信息
+export const phlexingConfig = params => ajaxGet({url: `phlexing/config/`,params})
+// Phlexing SSO状态诊断（GET）
+export const phlexingSSOStatus = params => ajaxGet({url: `phlexing/sso/`,params})
+// Phlexing SSO代理登录（POST）
+export const phlexingSSOLogin = params => ajaxPost({url: `phlexing/sso/`,params})
+
+/**
+ * 案例库管理（caselibrary）
+ * GitLab 案例看板：后端以 sqa 账号登录 GitLab 代理访问资源，前端 iframe 嵌入。
+ * */
+// 获取案例看板配置信息
+// 返回 {enabled, page_url(iframe 加载地址), proxy_base, base_url}
+export const caseBoardConfig = params => ajaxGet({url: `caseboard/config/`,params})
+
+/**
+ * 工程管理 - 打包管理
+ * */
+
+// 打包构建列表
+export const packageBuildList = params => ajaxGet({url: `engineering/package-build/`,params})
+// 打包构建 删除（走标准 destroy 路由，支持逗号分隔多 id 批量删除）
+export const packageBuildDelete = ids => ajaxDelete({url: `engineering/package-build/${ids}/`})
+// 同步 Jenkins 项目
+export const syncProjects = params => ajaxPost({url: `engineering/package-build/sync_projects/`,params})
+// 项目可见性授权清单（仅管理员）
+export const packageProjectPermissions = params => ajaxGet({url: `engineering/package-build/project_permissions/`,params})
+// 保存项目可见性授权（仅管理员，按 job_name 幂等保存）
+export const packageProjectPermissionSave = params => ajaxPut({url: `engineering/package-build/project_permissions/`,params})
+// 获取 Jenkins 任务参数
+export const jenkinsJobParams = params => ajaxGet({url: `engineering/package-build/jenkins_job_params/`,params})
+// 触发构建
+export const packageBuildTrigger = (id, params) => ajaxPost({url: `engineering/package-build/${id}/trigger_build/`,params})
+// 查询构建状态
+export const packageBuildStatus = (id) => ajaxGet({url: `engineering/package-build/${id}/build_status/`,params: {}})
+// 获取构建日志（offset 增量参数：0 为全量，>0 仅返回新增内容）
+export const packageBuildLog = (id, params) => ajaxGet({url: `engineering/package-build/${id}/build_log/`,params})
+// 发包（自动获取制品并创建软件包D包发包流程；params 可携带用户修改后的 software_path）
+export const packageBuildDeliver = (id, params) => ajaxPost({url: `engineering/package-build/${id}/deliver_package/`,params})
+// 发包预览（校验构建状态并返回制品路径，不创建流程，供发包确认弹窗展示/编辑）
+export const packageBuildDeliverPreview = id => ajaxPost({url: `engineering/package-build/${id}/deliver_package_preview/`})
+// 获取"软件包(D包)发包流程"表单定义（构建弹窗勾选自动传包时动态渲染申请表单）
+export const packageBuildDeliveryFormSchema = params => ajaxGet({url: `engineering/package-build/delivery_form_schema/`,params})
+// 获取扫描报告 html 内容（report_path 查询参数，审批详情"查看报告"弹窗使用）
+export const packageScanReport = params => ajaxGet({url: `engineering/package-build/scan_report/`,params})

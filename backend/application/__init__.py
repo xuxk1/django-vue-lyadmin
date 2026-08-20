@@ -2,3 +2,8 @@
 import pymysql
 
 pymysql.install_as_MySQLdb()
+
+# 导出 Celery 应用，确保 celery -A application 能正确加载（celery.py 中已设置 DJANGO_SETTINGS_MODULE）
+from application.celery import app as celery_app
+
+__all__ = ('celery_app',)

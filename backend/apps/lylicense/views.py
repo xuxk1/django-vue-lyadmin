@@ -765,6 +765,22 @@ def transform_json_with_mapping(raw_json, license_type, user_type='external'):
         mac_address = mac_address.replace('-', '').replace(':', '')
     hostname = transformed_data.get('Hostname', '')
 
+    # 解决注册表格行中声明但未选 feature 的产品（如只选了公共部分）
+    # 否则product_set / product_base_info 中会缺失该产品，导致其 Start/Expiry 时间丢失，
+    # 下游 GloryEX 组无法匹配到时间，license 无法制作，同时也无法生成制作记录
+    for _k, _v in transformed_data.items():
+        if isinstance(_v, list) and len(_v) > 0 and isinstance(_v[0], dict):
+            for _row in _v:
+                if not isinstance(_row, dict):
+                    continue
+                _p = _row.get('Product')
+                if not _p:
+                    continue
+                # 确保 product_set 中包含该产品（即使它没有任何 feature）
+                if _p not in product_features:
+                    product_features[_p] = {}
+                product_set.add(_p)
+
     # 优先使用 product_features 构建 UserInfo（无论是否已有 UserInfo）
     if product_features and product_set:
         # 构建产品到基础信息的映射（从表格数据中提取）
@@ -872,7 +888,7 @@ class LicenseApplicationViewSet(CustomModelViewSet):
     queryset = LicenseApplication.objects.all()
     serializer_class = LicenseApplicationSerializer
     create_serializer_class = LicenseApplicationCreateSerializer
-    filterset_fields = ['applicant', 'application_type', 'customer_name', 'status', 'serial_number']
+    filterset_fields = ['application_type', 'customer_name', 'status', 'serial_number']
     search_fields = ['applicant', 'customer_name', 'mac_address', 'feature', 'serial_number']
     ordering_fields = ['create_datetime']
     ordering = '-create_datetime'
@@ -880,13 +896,18 @@ class LicenseApplicationViewSet(CustomModelViewSet):
     extra_filter_backends = []
     
     def get_queryset(self):
-        """重写查询集，支持产品名称筛选（包括 user_info_list 中的产品）和权限控制"""
+        """重写查询集，支持申请人模糊搜索、产品名称筛选（包括 user_info_list 中的产品）和权限控制"""
         queryset = super().get_queryset()
         
         # 权限控制：只有管理员可以查看所有申请记录
         user = self.request.user
         if not user.is_superuser and not user.identity in [0, 1]:  # 非超级管理员和系统管理员
             queryset = queryset.filter(applicant_id=user.username)
+        
+        # 申请人模糊搜索
+        applicant = self.request.query_params.get('applicant')
+        if applicant:
+            queryset = queryset.filter(applicant__icontains=applicant)
         
         # 兼容前端两种参数名：product 和 product_name
         product_name = self.request.query_params.get('product') or self.request.query_params.get('product_name')
@@ -1703,7 +1724,8 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                                         else:
                                             logger.error(f"GloryEX组 License 文件生成失败: {gen_result.get('error')}")
                                     else:
-                                        logger.warning(f"未找到 GloryEX 组的预制作模板文件，跳过 License 生成")
+                                        logger.warning(f"未找到 GloryEX 组的预制作模板文件，跳过 Licens"
+                                                       f"e 生成")
                                 except Exception as e:
                                     logger.error(f"生成 GloryEX组 License 文件异常: {str(e)}", exc_info=True)
                             
@@ -2343,7 +2365,8 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                             owner=email_applicant,
                             application=instance,
                             license_file_name=result.get('file_name'),
-                            remote_dir=config.SSH_REMOTE_TEMPLATE_DIR
+                            remote_dir=config.SSH_REMOTE_TEMPLATE_DIR,
+                            local_license_path=result.get('full_path')  # 【修复】传入本地文件路径作为附件
                         )
                         logger.info(f"已发送 License 生成成功邮件给申请人: {email_applicant}")
                     else:
@@ -2568,6 +2591,10 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                             if isinstance(sub_count, (int, float)):
                                 actual_feature_name = f"{sub_feature}"
                                 actual_users_count = int(sub_count)
+                                # 【优化】申请数量为0的feature，跳过API查询featureId，继续下一个
+                                if actual_users_count == 0:
+                                    logger.info(f"Feature '{actual_feature_name}' 申请数量为0，跳过featureId查询")
+                                    continue
                                 total_users_number += actual_users_count
                                                             
                                 # 【优化】通过 API 获取 featureId
@@ -2608,6 +2635,10 @@ class LicenseApplicationViewSet(CustomModelViewSet):
                     elif isinstance(users_count, (int, float)):
                         # 简单结构：{feature_name: count}
                         actual_users_count = int(users_count)
+                        # 【优化】申请数量为0的feature，跳过API查询featureId，继续下一个
+                        if actual_users_count == 0:
+                            logger.info(f"Feature '{feature_name}' 申请数量为0，跳过featureId查询")
+                            continue
                         total_users_number += actual_users_count
                                                     
                         # 【优化】通过 API 获取 featureId
@@ -3081,14 +3112,9 @@ class LicenseRecordViewSet(CustomModelViewSet):
             count=Count('id')
         )
         
-        # 计算动态时间阈值
-        expiring_threshold = now + timedelta(days=30)
-        
-        # 即将过期的License（status=1 有效状态，且 end_time 距离现在<=30天且>0天）
+        # 即将过期的License（status=3 即将到期状态）
         expiring_soon = base_queryset.filter(
-            end_time__lte=expiring_threshold,
-            end_time__gt=now,
-            status=1  # 有效状态
+            status=3  # 即将到期状态
         ).count()
         
         # 已过期的License（status=2 已过期状态）
@@ -3223,12 +3249,14 @@ def _generate_flexnet_template_file(serial_number, mac_address, hostname, produc
         
         is_product_group = False
         related_products = []
+        version = '2.0'
         if product_name == 'GloryEX':
             is_product_group = True
             related_products = gloryex_group_products
         elif product_name == 'GloryBolt':
             is_product_group = True
             related_products = glorybolt_group_products
+            version = '1.0'
         else:
             related_products = [product_name]
         
@@ -3282,10 +3310,10 @@ def _generate_flexnet_template_file(serial_number, mac_address, hostname, produc
                 # 根据 keyword 是否为空决定使用 INCREMENT 还是 FEATURE
                 if keyword:
                     # keyword 不为空，使用 FEATURE
-                    feature_line = f"FEATURE {feature_name} PHLEXING 2.0 {end_date_str} {quantity} HOSTID=ANY {keyword} \\"
+                    feature_line = f"FEATURE {feature_name} PHLEXING {version} {end_date_str} {quantity} HOSTID=ANY {keyword} \\"
                 else:
                     # keyword 为空，使用 INCREMENT
-                    feature_line = f"INCREMENT {feature_name} PHLEXING 2.0 {end_date_str} {quantity} HOSTID=ANY \\"
+                    feature_line = f"INCREMENT {feature_name} PHLEXING {version} {end_date_str} {quantity} HOSTID=ANY \\"
                 
                 lines.append(feature_line)
                 

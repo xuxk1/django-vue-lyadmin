@@ -12,7 +12,10 @@
                     <el-input v-model.trim="formData.name"></el-input>
                 </el-form-item>
                 <el-form-item label="负责人：" prop="owner">
-                    <el-input v-model.trim="formData.owner"></el-input>
+                    <el-select v-model="formData.owner" filterable remote clearable :remote-method="searchUsers"
+                            :reserve-keyword="false" placeholder="输入姓名/账号搜索选择用户" style="width: 100%">
+                        <el-option v-for="u in userOptions" :key="u.value" :label="u.label" :value="u.value"></el-option>
+                    </el-select>
                 </el-form-item>
                 <el-form-item label="联系电话：" prop="phone">
                     <el-input v-model.trim="formData.phone"></el-input>
@@ -41,7 +44,7 @@
 
 <script>
     import utils from '@/utils/util'
-    import {apiSystemDeptAdd,apiSystemDept,apiSystemDeptEdit} from '@/api/api'
+    import {apiSystemDeptAdd,apiSystemDept,apiSystemDeptEdit,apiSystemAllUser} from '@/api/api'
     import LyDialog from "@/components/dialog/dialog";
     import {deepClone} from "@/utils/util";
     import XEUtils from "xe-utils";
@@ -83,13 +86,15 @@
                     //     {required: true, message: '请输入排序',trigger: 'blur'}
                     // ],
                 },
-                options: []
+                options: [],
+                userOptions: []
             }
         },
         methods:{
             handleClose() {
                 this.dialogVisible=false
                 this.loadingSave=false
+                this.userOptions = []
                 this.formData = {
                     parent:'',
                     name:'',
@@ -106,6 +111,10 @@
                 if(item){
                     this.formData = deepClone(item)
                 }
+                // 负责人回显：存量数据为姓名文本，直接作为选项值保证选中框正常显示
+                if (this.formData.owner && !this.userOptions.find(o => o.value === this.formData.owner)) {
+                    this.userOptions.push({value: this.formData.owner, label: this.formData.owner})
+                }
                 this.getapiSystemDept()
             },
             submitData() {
@@ -120,6 +129,8 @@
                         }else if(param.parent == null ||param.parent == undefined){
                             param.parent = ""
                         }
+                        // 负责人清空后 el-select 值为 undefined，JSON 序列化会丢弃该字段导致后端不更新，归一为空字符串
+                        param.owner = param.owner || ''
                         if(this.formData.id){
                             apiSystemDeptEdit(param).then(res=>{
                                 this.loadingSave=false
@@ -158,6 +169,23 @@
                         this.$message.warning(res.msg)
                     }
                 })
+            },
+            // 远程搜索用户（姓名/账号联想），选中后写入负责人姓名（与存量数据格式一致）
+            searchUsers(query) {
+                if (!query) return
+                apiSystemAllUser({search: query, page: 1, limit: 20}).then(res => {
+                    if (res.code === 2000) {
+                        const list = (res.data.data || []).map(u => ({
+                            value: u.name || u.username,
+                            label: u.name ? `${u.name}(${u.username})` : u.username
+                        }))
+                        list.forEach(u => {
+                            if (!this.userOptions.find(o => o.value === u.value)) {
+                                this.userOptions.push(u)
+                            }
+                        })
+                    }
+                }).catch(() => {})
             }
         }
     }

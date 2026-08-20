@@ -164,10 +164,38 @@ class LylicenseConfig(AppConfig):
                     # 而是在每个产品创建前检测该产品是否已存在
 
                     # 调用转换函数
-                    result = transform_json_with_mapping(json_data, license_type=license_type, user_type=user_type)
+                    try:
+                        result = transform_json_with_mapping(json_data, license_type=license_type, user_type=user_type)
+                    except Exception as e:
+                        logger.error(f"转换失败: {str(e)}")
+                        
+                        # 发送转换失败邮件通知
+                        try:
+                            import config
+                            from utils.email import EmailManager
 
-                    if not result['success']:
-                        logger.error(f"转换失败: {result.get('error')}")
+                            logger.info(f"准备发送转换失败邮件...")
+
+                            # 转换失败时，直接发送给指定人员
+                            owner_account = config.MAIL_RECIPIENT
+                            logger.info(f"邮件接收人: {owner_account}")
+
+                            # 使用原始 JSON 内容
+                            formatted_json = content
+                            error_message = str(e)  # 获取具体的错误信息
+                            file_name = os.path.basename(file_path)
+
+                            email_manager = EmailManager()
+                            email_manager.json_parsing_failed_send_email(
+                                owner_account, 
+                                formatted_json, 
+                                file_name,
+                                error_message=error_message  # 传递具体错误信息
+                            )
+                            logger.info(f"已发送转换失败邮件给: {owner_account}，文件名: {file_name}，错误: {error_message}")
+                        except Exception as email_err:
+                            logger.error(f"发送邮件失败: {str(email_err)}", exc_info=True)
+                        
                         return False
 
                     transformed_data = result['transformed_data']

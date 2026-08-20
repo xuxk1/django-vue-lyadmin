@@ -1,4 +1,4 @@
-﻿"""
+"""
 License文件扫描命令行工具
 扫描指定目录下的所有.lic文件，解析并发送过期提醒邮件
 """
@@ -193,6 +193,9 @@ class LicenseFileEmailSender:
         # 从配置文件读取抄送人，支持逗号分隔的多个邮箱
         self.cc = getattr(settings, 'LICENSE_DEFAULT_EXPIRED_CC', '')
         self.enabled = getattr(settings, 'LICENSE_AUTO_SEND_EMAIL', True)
+        
+        # 文档匹配收件人配置
+        self.document_matching_recipients = getattr(settings, 'DOCUMENT_MATCHING_RECIPIENTS', {})
 
     def get_cc_list(self) -> List[str]:
         """获取抄送人列表"""
@@ -214,6 +217,35 @@ class LicenseFileEmailSender:
 
         return result
 
+    def match_recipient_by_filename(self, file_name: str) -> Optional[str]:
+        """
+        根据文件名匹配收件人
+        
+        Args:
+            file_name: 文件名（不含路径）
+            
+        Returns:
+            匹配的收件人用户名，如果未匹配则返回None
+        """
+        if not self.document_matching_recipients:
+            return None
+        
+        # 将文件名转为小写进行匹配
+        file_name_lower = file_name.lower()
+        
+        # 遍历配置项，检查文件名是否包含关键字
+        for recipient_username, keywords_str in self.document_matching_recipients.items():
+            # 解析关键字列表（支持逗号分隔）
+            keywords = [k.strip().lower() for k in keywords_str.split(',') if k.strip()]
+            
+            # 检查文件名是否包含任意一个关键字
+            for keyword in keywords:
+                if keyword in file_name_lower:
+                    logger.info(f"文件名 '{file_name}' 匹配关键字 '{keyword}'，收件人: {recipient_username}")
+                    return recipient_username
+        
+        return None
+
     def get_recipients(self) -> List[str]:
         """获取收件人列表"""
         if not self.recipients:
@@ -234,7 +266,7 @@ class LicenseFileEmailSender:
 
     def send_notifications(self, warning_files: List[Dict], dry_run: bool = False) -> Dict:
         """发送邮件通知"""
-        result = {'sent': 0, 'failed': 0, 'errors': []}
+        result = {'sent': 0, 'failed': 0, 'errors': [], 'matched_files': 0, 'default_files': 0}
 
         if not self.enabled:
             logger.info("邮件发送已禁用")
@@ -244,34 +276,69 @@ class LicenseFileEmailSender:
             logger.info("没有即将过期的文件需要提醒")
             return result
 
-        recipients = self.get_recipients()
-        if not recipients:
-            logger.warning("未配置收件人")
-            return result
-
+        # 按收件人分组
+        recipient_groups = {}
         cc_list = self.get_cc_list()
+        
+        for file_info in warning_files:
+            file_name = file_info['file_name']
+            
+            # 尝试根据文件名匹配收件人
+            matched_recipient = self.match_recipient_by_filename(file_name)
+            
+            if matched_recipient:
+                # 使用匹配的收件人
+                result['matched_files'] += 1
+                # 构建完整的邮箱地址
+                if '@' in matched_recipient:
+                    recipient_email = matched_recipient
+                else:
+                    recipient_email = matched_recipient + self.email_domain
+                recipients_key = (recipient_email,)
+            else:
+                # 使用默认收件人
+                result['default_files'] += 1
+                default_recipients = self.get_recipients()
+                recipients_key = tuple(sorted(default_recipients))
+            
+            # 将文件添加到对应收件人的组中
+            if recipients_key not in recipient_groups:
+                recipient_groups[recipients_key] = {
+                    'recipients': list(recipients_key),
+                    'files': []
+                }
+            recipient_groups[recipients_key]['files'].append(file_info)
+        
         if cc_list:
             logger.info(f"抄送人: {', '.join(cc_list)}")
+        
+        logger.info(f"收件人分组统计: 匹配到特定收件人 {result['matched_files']} 个文件, 使用默认收件人 {result['default_files']} 个文件")
+        logger.info(f"共 {len(recipient_groups)} 个不同的收件人组")
 
-        for recipient in recipients:
-            try:
-                if dry_run:
-                    logger.info(f"[DRY RUN] 发送邮件给 {recipient}")
+        # 向每个收件人组发送邮件
+        for recipients_key, group_data in recipient_groups.items():
+            recipients = group_data['recipients']
+            files = group_data['files']
+            
+            for recipient in recipients:
+                try:
+                    if dry_run:
+                        logger.info(f"[DRY RUN] 发送邮件给 {recipient} (包含 {len(files)} 个文件)")
+                        result['sent'] += 1
+                        continue
+
+                    # 构建邮件内容
+                    subject, html_body, text_body = self._build_email_content(files)
+
+                    # 发送邮件
+                    self._send_email(recipient, cc_list, subject, html_body, text_body)
                     result['sent'] += 1
-                    continue
+                    logger.info(f"邮件发送成功: {recipient} (包含 {len(files)} 个文件)")
 
-                # 构建邮件内容
-                subject, html_body, text_body = self._build_email_content(warning_files)
-
-                # 发送邮件
-                self._send_email(recipient, cc_list, subject, html_body, text_body)
-                result['sent'] += 1
-                logger.info(f"邮件发送成功: {recipient}")
-
-            except Exception as e:
-                result['failed'] += 1
-                result['errors'].append(f"{recipient}: {str(e)}")
-                logger.error(f"发送邮件给 {recipient} 失败: {str(e)}")
+                except Exception as e:
+                    result['failed'] += 1
+                    result['errors'].append(f"{recipient}: {str(e)}")
+                    logger.error(f"发送邮件给 {recipient} 失败: {str(e)}")
 
         return result
 

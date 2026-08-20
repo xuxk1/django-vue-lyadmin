@@ -3,16 +3,50 @@ import logging
 import os
 import smtplib
 import time
+import uuid
 from abc import abstractmethod, ABC
 from datetime import datetime
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email import encoders
+from email.utils import encode_rfc2231, formatdate
 
 import config
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+
+def get_expiration_reminder_color(remaining_days):
+    """
+    根据剩余天数获取对应的邮件背景色（从settings中读取配置）
+    
+    Args:
+        remaining_days: 剩余天数
+        
+    Returns:
+        str: 背景色十六进制值
+    """
+    # 从settings中获取配置
+    reminders = getattr(settings, 'LICENSE_EXPIRATION_REMINDERS', [
+        {'days': 30, 'lower': 15, 'upper': 30, 'color': '#d4edda'},
+        {'days': 15, 'lower': 7, 'upper': 15, 'color': '#fff3cd'},
+        {'days': 7, 'lower': 0, 'upper': 7, 'color': '#f8d7da'},
+    ])
+    
+    # 按提醒天数降序排列，优先匹配更紧急的提醒
+    for reminder in sorted(reminders, key=lambda x: x['days'], reverse=True):
+        lower = reminder.get('lower', 0)
+        upper = reminder.get('upper', float('inf'))
+        color = reminder.get('color', '#d4edda')
+        
+        # 判断剩余天数是否在当前提醒范围内
+        if lower < remaining_days <= upper or (lower == 0 and remaining_days <= upper):
+            return color
+    
+    # 默认返回绿色（安全范围）
+    return '#d4edda'
 
 
 class EmailMessage(ABC):
@@ -53,10 +87,11 @@ class EmailMessage(ABC):
         pass
 
 class JSONParsingFailedMessage(EmailMessage):
-    def __init__(self, owner, json_data, file_name=''):
+    def __init__(self, owner, json_data, file_name='', error_message=''):
         self.owner = owner
         self.json_data = json_data
         self.file_name = file_name
+        self.error_message = error_message  # 新增错误信息参数
         super().__init__(self.owner, '')
         self.set_RC_email()
         self.set_Cc_email()
@@ -85,6 +120,17 @@ class JSONParsingFailedMessage(EmailMessage):
     def _generate_body_html(self):
         # JSON 已经解析失败，直接显示原始内容
         # 不再尝试解析，避免再次抛出异常
+        
+        # 如果有错误信息，在邮件中显示
+        error_section = ''
+        if self.error_message:
+            error_section = f"""
+        <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-bottom: 20px; border-radius: 3px;">
+            <strong style="color: #856404;"> 错误信息：</strong>
+            <p style="color: #856404; margin: 10px 0 0 0;">{self.error_message}</p>
+        </div>
+            """
+        
         html = f"""
         <html>
         <head>
@@ -124,6 +170,13 @@ class JSONParsingFailedMessage(EmailMessage):
             margin-bottom: 15px;
             border-radius: 3px;
         }}
+        .footer {{
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+            color: #666;
+            font-size: 12px;
+        }}
         </style>
         </head>
         <body>
@@ -132,14 +185,17 @@ class JSONParsingFailedMessage(EmailMessage):
             <p>请检查以下数据格式是否正确：</p>
         </div>
         
+        {error_section}
         {f'<div class="file-info"><strong>文件名：</strong>{self.file_name}</div>' if self.file_name else ''}
         
         <h3>原始数据</h3>
         <pre class="json-data">{self.json_data}</pre>
         
-        <p style="color: #666; margin-top: 20px; font-size: 12px;">
-            发送时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        </p>
+        <div class="footer">
+            <p>此邮件为系统自动发送，请勿直接回复。</p>
+            <p>发送时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p>如有问题，请联系系统管理员。</p>
+        </div>
         </body>
         </html>
         """
@@ -149,11 +205,11 @@ class JSONParsingFailedMessage(EmailMessage):
     def _generate_body_text(self):
         # JSON 已经解析失败，直接返回原始内容
         file_info = f"文件名: {self.file_name}\n" if self.file_name else ""
+        error_info = f"错误信息: {self.error_message}\n\n" if self.error_message else ""
         return f"""
 JSON 数据解析失败
 
-{file_info}
-原始数据:
+{file_info}{error_info}原始数据:
 {self.json_data}
 
 发送时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -166,25 +222,45 @@ class EmailManager:
         self.port = config.MAIL_PORT
         self.sender_email = config.MAIL_USER
         self.sender_password = config.MAIL_PASSWORD
+        # 是否使用 SSL 隐式加密连接，优先读取配置；未配置时根据端口自动判断（465 为 SSL）
+        self.use_ssl = getattr(config, 'MAIL_USE_SSL', int(self.port) == 465)
+        self.timeout = getattr(config, 'MAIL_TIMEOUT', 30)  # 连接超时时间（秒）
         self.server = None
-        self.max_retries = 3
-        self.retry_delay = 5 # seconds
+        self.max_retries = getattr(config, 'MAIL_MAX_RETRIES', 3)
+        self.retry_delay = getattr(config, 'MAIL_RETRY_DELAY', 5)  # seconds
 
     def connect(self) -> None:
-        """Establish SMTP connection with retry mechanism"""
+        """Establish SMTP connection with retry mechanism
+
+        根据配置的 MAIL_USE_SSL 自动选择连接方式：
+        - True：使用 SMTP_SSL（SSL 隐式加密，如 smtp.qq.com:465）
+        - False：使用普通 SMTP（如 25/587 端口），并尽量尝试 STARTTLS
+        """
         retry_count = 0
         while retry_count < self.max_retries:
             try:
-                self.server = smtplib.SMTP(self.smtp_server, self.port)
-                # Note: Removed starttls() since you're using port 25
+                if self.use_ssl:
+                    # SSL 隐式加密端口，必须使用 SMTP_SSL
+                    self.server = smtplib.SMTP_SSL(self.smtp_server, self.port, timeout=self.timeout)
+                else:
+                    self.server = smtplib.SMTP(self.smtp_server, self.port, timeout=self.timeout)
+                    # 587 等提交端口通常需要 STARTTLS
+                    try:
+                        self.server.ehlo()
+                        if self.server.has_extn('starttls'):
+                            self.server.starttls()
+                            self.server.ehlo()
+                    except Exception:
+                        # 部分内网 SMTP 不支持 STARTTLS，允许明文继续
+                        pass
                 self.server.login(self.sender_email, self.sender_password)
-                logging.info("Successfully connected to SMTP server")
+                logger.info(f"Successfully connected to SMTP server {self.smtp_server}:{self.port}")
                 return
             except Exception as e:
                 retry_count += 1
                 if retry_count == self.max_retries:
                     raise Exception(f"Failed to connect after {self.max_retries} attempts: {str(e)}")
-                logging.warning(f"Connection attempt {retry_count} failed, retrying in {self.retry_delay} seconds...")
+                logger.warning(f"Connection attempt {retry_count} failed ({str(e)}), retrying in {self.retry_delay} seconds...")
                 time.sleep(self.retry_delay)
 
     def send_email(self, email_messages):
@@ -194,42 +270,52 @@ class EmailManager:
 
         for message in email_messages:
             content = message.get_email_content()
-            mime_message = MIMEMultipart("alternative")
+            logger.info(f"[邮件发送] 准备发送邮件：收件人={content.get('recipient')}，"
+                        f"抄送={content.get('Cc') or '无'}，主题={content.get('subject')}")
+            
+            # 外层使用 multipart/mixed：正文与附件平级挂载，符合 MIME 规范。
+            # 【修复】此前附件直接挂在 multipart/alternative 内部，Outlook 严格按
+            # RFC 2046 解析会忽略 alternative 中的非正文部分（附件不显示），而
+            # Foxmail 解析宽松仍可显示，导致两个邮件客户端表现不一致。
+            mime_message = MIMEMultipart("mixed")
             mime_message["From"] = self.sender_email
-            mime_message["Date"] = datetime.now().strftime("%d %b %Y %H:%M:%S")
+            mime_message["Date"] = formatdate()
             mime_message["To"] = content["recipient"]
-
+            
             if content.get('Cc'):
                 mime_message["Cc"] = content['Cc']
-
+            
             mime_message["Subject"] = content['subject']
-
-            body_part = "No message"
-            if content.get('body_html'):
-                body_part = MIMEText(content['body_html'], 'html')
-            elif content.get('body_text'):
-                body_part = MIMEText(content['body_text'], 'plain')
+            
+            # 显式设置唯一 Message-ID：同一收件人短时间内收到多封相同主题邮件时，
+            # 邮件网关可能按重复邮件丢弃后续邮件，唯一 Message-ID 避免误判
+            mime_message["Message-ID"] = f'<{uuid.uuid4()}@{self.sender_email.split("@")[-1]}>'
+            
+            # 正文部分：使用 multipart/alternative 承载 HTML 与纯文本两种表示
+            if content.get('body_html') or content.get('body_text'):
+                body_part = MIMEMultipart("alternative")
+                if content.get('body_html'):
+                    body_part.attach(MIMEText(content['body_html'], 'html', 'utf-8'))
+                if content.get('body_text'):
+                    body_part.attach(MIMEText(content['body_text'], 'plain', 'utf-8'))
             else:
-                body_part = MIMEText(body_part, 'plain')
-
+                body_part = MIMEText("No message", 'plain', 'utf-8')
             mime_message.attach(body_part)
-
+            
             # 【新增】如果存在附件，则附加文件
             if content.get('attachment'):
                 attachment_info = content['attachment']
                 attachment_path = attachment_info.get('path')
                 attachment_filename = attachment_info.get('filename', os.path.basename(attachment_path))
-                
+            
                 if attachment_path and os.path.exists(attachment_path):
                     try:
                         with open(attachment_path, 'rb') as f:
                             attachment = MIMEBase('application', 'octet-stream')
                             attachment.set_payload(f.read())
                         encoders.encode_base64(attachment)
-                        attachment.add_header(
-                            'Content-Disposition',
-                            f'attachment; filename="{attachment_filename}"'
-                        )
+                        # 【修复】兼容 Outlook/Foxmail 的文件名编码方式
+                        self._set_attachment_filename(attachment, attachment_filename)
                         mime_message.attach(attachment)
                         logging.info(f"已附加 License 文件: {attachment_filename}")
                     except Exception as e:
@@ -239,7 +325,8 @@ class EmailManager:
             while retry_count < self.max_retries:
                 try:
                     self.server.send_message(mime_message)
-                    logging.info(f"Email sent successfully to {content['recipient']}")
+                    cc_info = f" (Cc: {content['Cc']})" if content.get('Cc') else ''
+                    logging.info(f"Email sent successfully to {content['recipient']}{cc_info}")
                     break
                 except smtplib.SMTPServerDisconnected:
                     logging.warning("Server disconnected. Attempting to reconnect...")
@@ -253,6 +340,29 @@ class EmailManager:
                         break
                     logging.warning(f"Send attempt {retry_count} failed, retrying in {self.retry_delay} seconds...")
                     time.sleep(self.retry_delay)
+
+    @staticmethod
+    def _set_attachment_filename(attachment, filename):
+        """为附件设置文件名（兼容 Outlook 与 Foxmail）
+
+        文件名含非 ASCII 字符时，若只用 RFC 2047 encoded-word 形式的 filename
+        参数，部分 Outlook 版本无法正确解析附件；需同时提供 RFC 2231 编码的
+        filename* 参数与一个 ASCII 兜底文件名，保证各客户端均能识别附件。
+        """
+        try:
+            filename.encode('ascii')
+        except UnicodeEncodeError:
+            # 非 ASCII 文件名：RFC 2231 编码的真实名 + ASCII 兜底名
+            fallback = filename.encode('ascii', 'ignore').decode('ascii').strip(' _') or 'attachment.bin'
+            attachment.add_header(
+                'Content-Disposition', 'attachment',
+                **{'filename': fallback,
+                   'filename*': encode_rfc2231(filename, 'utf-8')}
+            )
+            attachment.set_param('name', filename)
+        else:
+            attachment.add_header('Content-Disposition', 'attachment', filename=filename)
+            attachment.set_param('name', filename)
 
     def send_raw_email(self, msg):
         """发送原始邮件对象"""
@@ -270,9 +380,9 @@ class EmailManager:
             except:
                 pass
 
-    def json_parsing_failed_send_email(self, owner, data, file_name=''):
+    def json_parsing_failed_send_email(self, owner, data, file_name='', error_message=''):
         messages = []
-        message = JSONParsingFailedMessage(owner, data, file_name)
+        message = JSONParsingFailedMessage(owner, data, file_name, error_message)
         messages.append(message)
         self.send_email(messages)
 
@@ -478,7 +588,6 @@ class LicenseExpiringSoonMessage(EmailMessage):
         return
 
     def set_RC_email(self):
-        # owner 是单个申请人账号字符串（如 'ltjiadong'）
         recip_names = [self.owner] if isinstance(self.owner, str) else self.owner
         recip_addr = []
         for name in recip_names:
@@ -513,13 +622,9 @@ class LicenseExpiringSoonMessage(EmailMessage):
                 else:
                     end_time_str = '-'
                 
-                # 根据剩余天数设置不同的样式
-                if product_remaining_days <= 7:
-                    row_style = 'background-color: #f8d7da;'
-                elif product_remaining_days <= 15:
-                    row_style = 'background-color: #fff3cd;'
-                else:
-                    row_style = 'background-color: #d4edda;'
+                # 根据剩余天数设置不同的背景色（从settings中读取配置）
+                row_style_bg = get_expiration_reminder_color(product_remaining_days)
+                row_style = f'background-color: {row_style_bg};'
                 
                 product_rows += f"""
                 <tr style="{row_style}">
@@ -572,6 +677,9 @@ class LicenseExpiringSoonMessage(EmailMessage):
             """
         else:
             # 单产品场景：原有逻辑
+            # 根据剩余天数设置不同的背景色（从settings中读取配置）
+            row_style_bg = get_expiration_reminder_color(self.remaining_days)
+            
             html = f"""
             <html>
             <head>
@@ -588,9 +696,6 @@ class LicenseExpiringSoonMessage(EmailMessage):
             th {{
                 background-color: #f2f2f2;
             }}
-            .warning-row {{
-                background-color: #fff3cd;
-            }}
             </style>
             </head>
             <body>
@@ -605,7 +710,7 @@ class LicenseExpiringSoonMessage(EmailMessage):
                     <th>剩余天数</th>
                 </tr>
                 <tbody>
-                    <tr class="warning-row">
+                    <tr style="background-color: {row_style_bg};">
                         <td>{self.application.product}</td>
                         <td>{self.application.applicant}</td>
                         <td>{self.application.customer_name}</td>
@@ -758,7 +863,10 @@ class LicenseGeneratedMessage(EmailMessage):
                     prod_features = item[product_name]
                     if isinstance(prod_features, dict):
                         for feat, qty in prod_features.items():
-                            quantity_str = str(qty) if qty else ''
+                            # 【修复】授权数量为0的feature不在邮件中展示（与制作时跳过逻辑保持一致）
+                            if not qty:
+                                continue
+                            quantity_str = str(qty)
                             quantity_items += f"<li style='margin-left: 20px;'>{feat} (授权数量: {quantity_str})</li>"
 
                 # 【关键】如果是 GloryEX 产品，且存在 GloryEXCommon，则合并 Common 的特性
@@ -771,7 +879,10 @@ class LicenseGeneratedMessage(EmailMessage):
                             quantity_items += "<li style='margin-left: 20px;margin-top: 10px; border-top: 1px solid #ddd; padding-top: 5px;'><strong>———GloryEXCommon 公共特性 ————</strong></li>"
                             # 添加 Common 的特性
                             for feat, qty in common_features.items():
-                                quantity_str = str(qty) if qty else ''
+                                # 【修复】授权数量为0的feature不在邮件中展示
+                                if not qty:
+                                    continue
+                                quantity_str = str(qty)
                                 quantity_items += f"<li style='margin-left: 20px;'>{feat} (授权数量: {quantity_str})</li>"
                 
                 products_html += f"""
@@ -994,7 +1105,10 @@ class LicenseGeneratedMessage(EmailMessage):
                     prod_features = item[product_name]
                     if isinstance(prod_features, dict):
                         for feat, qty in prod_features.items():
-                            quantity_str = str(qty) if qty else ''
+                            # 【修复】授权数量为0的feature不在邮件中展示（与制作时跳过逻辑保持一致）
+                            if not qty:
+                                continue
+                            quantity_str = str(qty)
                             quantity_items += f"    - {feat} (授权数量: {quantity_str})\n"
 
                 # 【关键】如果是 GloryEX 产品，且存在 GloryEXCommon，则合并 Common 的特性
@@ -1007,7 +1121,10 @@ class LicenseGeneratedMessage(EmailMessage):
                             quantity_items += "    ———GloryEXCommon 公共特性 ————\n"
                             # 添加 Common 的特性
                             for feat, qty in common_features.items():
-                                quantity_str = str(qty) if qty else ''
+                                # 【修复】授权数量为0的feature不在邮件中展示
+                                if not qty:
+                                    continue
+                                quantity_str = str(qty)
                                 quantity_items += f"    - {feat} (授权数量: {quantity_str})\n"
                 
                 products_text += f"""

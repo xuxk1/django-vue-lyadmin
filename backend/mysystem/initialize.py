@@ -122,6 +122,7 @@ if object.{key}:
             {'id': 'dc8c173b425048e7a8c9b59513596c7f', 'name': '商品财务流水', 'sort': 1, 'web_path': 'financeStatisticsGoods', 'icon': '','parent_id': '2a7c0142f7514dacb7999383e4e67aca', 'component': None, 'component_name': None, 'visible': 1,'isautopm': 0},
             {'id': '3c13161f70f1469a913d539e7616c577', 'name': '意见反馈', 'sort': 8, 'web_path': 'userFeekback', 'icon': '','parent_id': 'd4e2fe169a8b40f3846421ac04e4fccb', 'component': None, 'component_name': None, 'visible': 1,'isautopm': 0},
             {'id': '8d7c2a1b5f3e4a9c8e1d2f3a4b5c6d7e', 'name': 'License授权管理', 'sort': 15, 'web_path': 'licenseManage','icon': 'Key', 'parent_id': None, 'component': None, 'component_name': None, 'visible': 1,'isautopm': 0},
+            {'id': 'c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4', 'name': '知识库管理', 'sort': 16, 'web_path': 'knowledgeBase','icon': 'Reading', 'parent_id': None, 'component': None, 'component_name': None, 'visible': 1,'isautopm': 0},
 
         ]
         self.save(Menu, self.menu_data, "菜单表")
@@ -268,7 +269,7 @@ if object.{key}:
              "dept": ["d2c03bd9-dad0-4262-88ca-c3681d224fc3", "fd8230ca-67bd-4347-8a9b-57eb19be5d9e"],
              "menu": ["15c9ebc5-d12f-470a-a560-938a7dc57570", "4236eb70-1558-43a0-9cf2-037230c547f9",
                       "54f769b0-3dff-416c-8102-e55ec44827cc", "56c3f341-4f46-4b04-9cfc-c8a14701707e",
-                      "244b28685cd14a39a383189981510d4a"],
+                      "244b28685cd14a39a383189981510d4a", "c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4"],
              "permission": []
              },
             #自定义

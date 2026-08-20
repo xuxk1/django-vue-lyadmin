@@ -13,6 +13,7 @@ from utils.serializers import CustomModelSerializer
 from utils.validator import CustomUniqueValidator
 from utils.viewset import CustomModelViewSet
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import action
 from django.db.models import Q
 from utils.filters import UsersManageTimeFilter
 
@@ -23,16 +24,22 @@ class UserSerializer(CustomModelSerializer):
     rolekey = serializers.SerializerMethodField(read_only=True)  # 角色key列表
     dept_name = serializers.SerializerMethodField(read_only=True)  # 部门名称
     role_names = serializers.SerializerMethodField(read_only=True)  # 角色名称列表
+    dept = serializers.SerializerMethodField(read_only=True)  # 安全处理dept（部门可能不存在）
     
     def to_representation(self, instance):
-        """调试：查看序列化过程"""
         print(f"\n{'='*60}")
         print(f"[UserSerializer.to_representation]")
         print(f"{'='*60}")
         print(f"instance.id: {instance.id}")
-        print(f"instance.dept: {instance.dept}")
+        try:
+            print(f"instance.dept: {instance.dept}")
+        except Exception:
+            print(f"instance.dept: [部门不存在, dept_id={instance.dept_id}]")
         print(f"instance.dept_id: {instance.dept_id if hasattr(instance, 'dept_id') else 'N/A'}")
-        print(f"instance.role (ManyToMany): {list(instance.role.all())}")
+        try:
+            print(f"instance.role (ManyToMany): {list(instance.role.all())}")
+        except Exception:
+            print(f"instance.role: [无法获取]")
         ret = super().to_representation(instance)
         print(f"ret.keys(): {list(ret.keys())}")
         print(f"'dept' in ret: {'dept' in ret}")
@@ -42,11 +49,21 @@ class UserSerializer(CustomModelSerializer):
         print(f"{'='*60}\n")
         return ret
 
+    def get_dept(self, obj):
+        """安全返回部门ID，部门不存在时返回None"""
+        try:
+            return obj.dept_id if obj.dept_id else None
+        except Exception:
+            return None
+
     def get_rolekey(self,obj):
         return list(obj.role.values_list('key', flat=True))
     
     def get_dept_name(self, obj):
-        return obj.dept.name if obj.dept else ''
+        try:
+            return obj.dept.name if obj.dept else ''
+        except Exception:
+            return ''
     
     def get_role_names(self, obj):
         return list(obj.role.values_list('name', flat=True))
@@ -231,7 +248,8 @@ class UserViewSet(CustomModelViewSet):
             "name":user.name,
             "mobile":user.mobile,
             "gender":user.gender,
-            "email":user.email
+            "email":user.email,
+            "is_superuser":bool(user.is_superuser),
         }
         return SuccessResponse(data=result,msg="获取成功")
 
@@ -261,3 +279,17 @@ class UserViewSet(CustomModelViewSet):
                 return ErrorResponse(msg="旧密码不正确")
         else:
             return ErrorResponse(msg="未获取到用户")
+
+    @action(methods=['get'], detail=False)
+    def all_users(self, request):
+        """获取所有用户列表（不限身份类型），用于工作流等场景的用户选择"""
+        from utils.pagination import CustomPagination
+        queryset = Users.objects.filter(is_delete=False).order_by('-create_datetime')
+        # 支持按姓名搜索
+        search = request.query_params.get('search', '')
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(username__icontains=search))
+        page_obj = CustomPagination()
+        page_data = page_obj.paginate_queryset(queryset, request)
+        serializer = UserSerializer(page_data, many=True)
+        return page_obj.get_paginated_response(serializer.data)

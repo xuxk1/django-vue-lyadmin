@@ -71,6 +71,8 @@ INSTALLED_APPS = [
     'apps.lycrontab',
     'apps.lylicense',
     'apps.lyworkflow',
+    'apps.engineering',
+    'apps.caselibrary',
     'django_crontab',  # 定时任务
 ]
 
@@ -560,10 +562,19 @@ LICENSE_DEFAULT_RECIPIENT = 'xuxiaokui'
 # 默认抄送人
 LICENSE_DEFAULT_EXPIRED_CC = 'xuxiaokui'
 
+# License文件匹配收件人
+DOCUMENT_MATCHING_RECIPIENTS = {
+    'liuke': 'hs',
+    'renxu': 'gailun',
+    'heyuan': 'icc,shanghaijicheng,zhangjiang,ICRD,changxin,CXMT,772',
+    'wangsiqi': '58suo,631',
+    'caisiying': 'qitai,ymtc,mthreads',
+    'wushisheng': 'EDA2,zte,huali'
+}
+
 # 收件人配置
 LICENSE_EMAIL_RECIPIENTS = [
     'xuxiaokui@phlexing.com',
-    'zhuxueting@phlexing.com',
 ]
 
 LICENSE_FILE_WATCHER = '/tmp/lylicense_file_watcher.lock'
@@ -572,15 +583,15 @@ LICENSE_FILE_WATCHER = '/tmp/lylicense_file_watcher.lock'
 # ******************** License过期提醒配置 ******************** #
 # ================================================= #
 # License即将过期提醒规则（单位：天）
-# 格式：{'days': 提醒天数, 'lower': 下限(不包含), 'upper': 上限(包含)}
+# 格式：{'days': 提醒天数, 'lower': 下限(不包含), 'upper': 上限(包含), 'color': 邮件背景色}
 # 默认配置：
-#   - 30天提醒：剩余天数在 (15, 30] 范围内发送
-#   - 15天提醒：剩余天数在 (7, 15] 范围内发送
-#   - 7天提醒：剩余天数在 [0, 7] 范围内发送
+#   - 30天提醒：剩余天数在 (15, 30] 范围内发送，绿色背景
+#   - 15天提醒：剩余天数在 (7, 15] 范围内发送，黄色背景
+#   - 7天提醒：剩余天数在 [0, 7] 范围内发送，红色背景
 LICENSE_EXPIRATION_REMINDERS = [
-    {'days': 30, 'lower': 15, 'upper': 30},  # 30天提醒，范围(15, 30]
-    {'days': 15, 'lower': 7, 'upper': 15},   # 15天提醒，范围(7, 15]
-    {'days': 7, 'lower': 0, 'upper': 7},     # 7天提醒，范围[0, 7]
+    {'days': 30, 'lower': 15, 'upper': 30, 'color': '#d4edda'},  # 30天提醒，范围(15, 30]，绿色
+    {'days': 15, 'lower': 7, 'upper': 15, 'color': '#fff3cd'},   # 15天提醒，范围(7, 15]，黄色
+    {'days': 7, 'lower': 0, 'upper': 7, 'color': '#f8d7da'},     # 7天提醒，范围[0, 7]，红色
 ]
 
 # 是否启用License过期自动检查（视图层）
@@ -595,6 +606,9 @@ CRONJOBS = [
 
     # 每天凌晨2点执行更新License Record表中remaining_days字段
     ('0 2 * * *', 'apps.lylicense.update_remaining_days.update_remaining_days_job', '>> /var/log/update_remaining_days.log 2>&1'),
+
+    # 每天凌晨3点执行LDAP用户同步（增量同步，保持用户和部门实时更新）
+    ('0 3 * * *', 'mysystem.cron.ldap_sync_users_job', '>> /var/log/ldap_sync_users.log 2>&1'),
 
     # 每5分钟执行一次（开发测试用，正式环境请注释掉）
     ('*/5 * * * *', 'apps.lylicense.cron.check_license_expiration_job', '>> /var/log/license_cron_debug.log 2>&1'),
@@ -621,4 +635,5 @@ if platform.system() == 'Windows':
     # Windows下不使用日志重定向，由命令内部处理
     CRONJOBS = [
         ('0 2 * * *', 'apps.lylicense.cron.check_license_expiration_job', ''),
+        ('0 3 * * *', 'mysystem.cron.ldap_sync_users_job', ''),
     ]

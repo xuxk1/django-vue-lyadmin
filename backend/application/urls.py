@@ -26,6 +26,7 @@ from rest_framework_simplejwt.views import (
 )
 
 from mysystem.views.login import LoginView,CaptchaView
+from mysystem.views.knowledge_base import PhlexingSSOView, PhlexingConfigView
 from utils.swagger import CustomOpenAPISchemaGenerator
 
 #前端接口view
@@ -80,6 +81,13 @@ urlpatterns = [
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/captcha/', CaptchaView.as_view()),
 
+    # 知识库SSO代理登录（Phlexing/AnythingLLM）
+    path('api/phlexing/sso/', PhlexingSSOView.as_view(), name='phlexing_sso'),
+    path('api/phlexing/config/', PhlexingConfigView.as_view(), name='phlexing_config'),
+
+    # GitLab 案例看板（sqa 账号代理登录 + 资源代理）
+    path('api/caseboard/', include('apps.caselibrary.urls')),
+
     #管理后台其他自定义接口
     path('api/platformsettings/', include('apps.platformsettings.urls')),
     path('api/address/', include('apps.address.urls')),
@@ -89,6 +97,7 @@ urlpatterns = [
     path('api/crontab/', include('apps.lycrontab.urls')),
     path('api/license/', include('apps.lylicense.urls')),
     path('api/workflow/', include('apps.lyworkflow.urls')),
+    path('api/engineering/', include('apps.engineering.urls')),
 
     # ========================================================================================= #
     # ********************************** 前端微服务API用户接口************************************ #

@@ -106,15 +106,18 @@
                 <template #default="scope">
                     <!-- 流程待办任务的操作 -->
                     <template v-if="activeTab === 'pending'">
+                        <!-- 已退回的待办：申请人修改后重新提交 -->
                         <span class="table-operate-btn" 
-                              @click="approveTask(scope.row)" 
-                              style="color: #67C23A;">
-                            通过
+                              v-if="scope.row.is_returned" 
+                              @click="resubmitTask(scope.row)" 
+                              style="color: #E6A23C;">
+                            重新提交
                         </span>
                         <span class="table-operate-btn" 
-                              @click="rejectTask(scope.row)" 
-                              style="color: #F56C6C;">
-                            驳回
+                              v-else
+                              @click="approveTask(scope.row)" 
+                              :style="isConfirmNode(scope.row) ? { color: '#E6A23C' } : {}">
+                            {{ isConfirmNode(scope.row) ? '确认' : '审批' }}
                         </span>
                         <span class="table-operate-btn" @click="viewWorkflowDetail(scope.row)">详情</span>
                     </template>
@@ -161,17 +164,49 @@
                 </span>
             </template>
         </el-dialog>
+
+        <!-- 审批对话框（与流程列表页审批弹窗保持一致） -->
+        <el-dialog v-model="approveDialogVisible" title="流程审批" width="600px" :close-on-click-modal="false">
+            <el-form :model="approveForm" label-width="100px">
+                <el-form-item label="审批结果" required>
+                    <el-radio-group v-model="approveForm.approve_result">
+                        <el-radio :label="1">通过</el-radio>
+                        <!-- 只有当步骤配置允许驳回时才显示驳回选项 -->
+                        <el-radio :label="2" v-if="currentTask && canReject(currentTask)">驳回</el-radio>
+                        <!-- 只有当步骤配置允许退回时才显示退回选项 -->
+                        <el-radio :label="3" v-if="currentTask && canReturn(currentTask)">退回</el-radio>
+                    </el-radio-group>
+                    <!-- 提示信息 -->
+                    <div v-if="currentTask && (!canReject(currentTask) || !canReturn(currentTask))" style="margin-top: 8px; color: #909399; font-size: 12px;">
+                        <span v-if="!canReject(currentTask)">· 当前节点不允许驳回操作</span>
+                        <span v-if="!canReturn(currentTask)" style="margin-left: 10px;">· 当前节点不允许退回操作</span>
+                    </div>
+                </el-form-item>
+                <el-form-item label="审批意见" :required="isCommentRequired">
+                    <el-input v-model="approveForm.approve_comment" type="textarea" :rows="4" placeholder="请输入审批意见"></el-input>
+                </el-form-item>
+            </el-form>
+            <template #footer>
+                <el-button @click="approveDialogVisible = false">取消</el-button>
+                <el-button type="primary" @click="handleApproveSubmit" :loading="approveLoading">确定</el-button>
+            </template>
+        </el-dialog>
+
+        <!-- 流程详情弹窗（公共组件：流程列表/我的待办/我的已办共用） -->
+        <WorkflowDetailDialog v-model="detailDialogVisible" :instance-id="detailInstanceId" />
     </div>
 </template>
 
 <script>
 import Pagination from "@/components/Pagination";
 import { getTableHeight } from "@/utils/util";
-import { getUserMessages, updateUserMessageStatus, workflowTaskApprove, workflowTaskReject, getMyPendingTasks } from '@/api/api';
+import { getUserMessages, updateUserMessageStatus, workflowTaskApprove, workflowTaskReject, workflowTaskReturn, workflowTaskConfirm, getMyPendingTasks } from '@/api/api';
+import WorkflowDetailDialog from "@/components/workflowDetailDialog";
 
 export default {
     components: {
-        Pagination
+        Pagination,
+        WorkflowDetailDialog
     },
     name: 'myMessages',
     data() {
@@ -194,7 +229,23 @@ export default {
             tableData: [],
             viewDialogVisible: false,
             currentMessage: null,
-            selectedTasks: [] // 选中的待办任务
+            selectedTasks: [], // 选中的待办任务
+            // 审批弹窗相关（与流程列表页审批弹窗保持一致）
+            approveDialogVisible: false,
+            approveLoading: false,
+            currentTask: null,
+            approveForm: {
+                approve_result: 1,
+                approve_comment: ''
+            },
+            detailDialogVisible: false,
+            detailInstanceId: null  // 查看详情的流程实例ID（传递给公共详情组件）
+        }
+    },
+    computed: {
+        // 审批意见是否必填（驳回或退回时必填）
+        isCommentRequired() {
+            return this.approveForm.approve_result === 2 || this.approveForm.approve_result === 3
         }
     },
     methods: {
@@ -342,29 +393,41 @@ export default {
                     return
                 }
                 
-                vm.$prompt('请输入审批意见（可选）', '审批通过', {
-                    confirmButtonText: '确定',
-                    cancelButtonText: '取消',
-                    inputPlaceholder: '请输入审批意见',
-                    closeOnClickModal: false
-                }).then(({ value }) => {
-                    const data = {
-                        approve_result: 1,  // 1=通过
-                        approve_comment: value || ''
-                    }
-                    
-                    workflowTaskApprove(taskId, data).then(res => {
-                        if (res.code === 2000) {
-                            vm.$message.success('审批通过')
-                            // 刷新列表
-                            vm.getData()
-                        } else {
-                            vm.$message.error(res.msg || '审批失败')
+                // 申请人确认类节点（发起人确认/申请人自选）保持原确认流程
+                if (vm.isConfirmNode(row)) {
+                    vm.$prompt('请输入审批意见（可选）', '确认通过', {
+                        confirmButtonText: '确定',
+                        cancelButtonText: '取消',
+                        inputPlaceholder: '请输入审批意见',
+                        closeOnClickModal: false
+                    }).then(({ value }) => {
+                        const data = {
+                            approve_result: 1,  // 1=通过
+                            approve_comment: value || ''
                         }
-                    }).catch(err => {
-                        vm.$message.error('审批失败')
-                    })
-                }).catch(() => {})
+                        
+                        workflowTaskConfirm(taskId, data).then(res => {
+                            if (res.code === 2000) {
+                                vm.$message.success('确认成功')
+                                // 刷新列表
+                                vm.getData()
+                            } else {
+                                vm.$message.error(res.msg || '确认失败')
+                            }
+                        }).catch(err => {
+                            vm.$message.error('确认失败')
+                        })
+                    }).catch(() => {})
+                    return
+                }
+                
+                // 普通审批节点：打开与流程列表一致的审批弹窗（通过/驳回/退回）
+                vm.currentTask = row
+                vm.approveForm = {
+                    approve_result: 1,
+                    approve_comment: ''
+                }
+                vm.approveDialogVisible = true
             } else {
                 // 如果是消息中的审批任务
                 if (!row.task_id) {
@@ -372,7 +435,11 @@ export default {
                     return
                 }
                 
-                vm.$prompt('请输入审批意见（可选）', '审批通过', {
+                // 判断是否为申请人确认（发起人确认/申请人自选节点）
+                const isConfirm = vm.isConfirmNode(row)
+                const title = isConfirm ? '确认通过' : '流程审批'
+                
+                vm.$prompt('请输入审批意见（可选）', title, {
                     confirmButtonText: '确定',
                     cancelButtonText: '取消',
                     inputPlaceholder: '请输入审批意见',
@@ -383,69 +450,110 @@ export default {
                         approve_comment: value || ''
                     }
                     
-                    workflowTaskApprove(row.task_id, data).then(res => {
+                    const apiCall = isConfirm ? workflowTaskConfirm(row.task_id, data) : workflowTaskApprove(row.task_id, data)
+                    apiCall.then(res => {
                         if (res.code === 2000) {
-                            vm.$message.success('审批通过')
+                            vm.$message.success(isConfirm ? '确认成功' : '审批通过')
                             // 标记消息为已读
                             vm.markAsRead(row, false)
                             // 刷新列表
                             vm.getData()
                         } else {
-                            vm.$message.error(res.msg || '审批失败')
+                            vm.$message.error(res.msg || (isConfirm ? '确认失败' : '审批失败'))
                         }
                     }).catch(err => {
-                        vm.$message.error('审批失败')
+                        vm.$message.error(isConfirm ? '确认失败' : '审批失败')
                     })
                 }).catch(() => {})
             }
         },
         
-        // 驳回任务
-        rejectTask(row) {
-            let vm = this
-            const taskId = row.id
-            if (!taskId) {
-                vm.$message.warning('无法找到对应的审批任务')
-                return
-            }
-            
-            vm.$prompt('请输入驳回原因', '驳回流程', {
-                confirmButtonText: '确定',
-                cancelButtonText: '取消',
-                inputPlaceholder: '请输入驳回原因',
-                inputValidator: (value) => {
-                    if (!value || value.trim() === '') {
-                        return '驳回原因不能为空'
-                    }
-                    return true
-                },
-                closeOnClickModal: false
-            }).then(({ value }) => {
-                const data = {
-                    approve_result: 2,  // 2=驳回
-                    approve_comment: value
-                }
-                
-                workflowTaskReject(taskId, data).then(res => {
-                    if (res.code === 2000) {
-                        vm.$message.success('已驳回')
-                        // 刷新列表
-                        vm.getData()
-                    } else {
-                        vm.$message.error(res.msg || '驳回失败')
-                    }
-                }).catch(err => {
-                    vm.$message.error('驳回失败')
-                })
-            }).catch(() => {})
+        // 判断是否为发起人确认类节点（申请人自选/发起人确认）：仅此类节点显示“确认”按钮，
+        // 普通审批节点即使申请人是审批人也显示“审批”按钮（与流程列表页逻辑一致）
+        isConfirmNode(row) {
+            if (!row.is_applicant) return false
+            const approverType = row.level_approver_type || row.step_approver_type
+            // 发起人(7)或申请人自选(5)节点才走确认逻辑
+            return approverType == 7 || approverType == 5
         },
         
-        // 查看流程详情
+        // 根据后端返回的 allow_reject 字段判断当前节点是否允许驳回（仅当后端明确返回 true 时才允许）
+        canReject(row) {
+            const v = row.allow_reject
+            return v === true || v === 'true' || v === 'True' || v === 1 || v === '1'
+        },
+        
+        // 根据后端返回的 allow_return 字段判断当前节点是否允许退回（仅当后端明确返回 true 时才允许）
+        canReturn(row) {
+            const v = row.allow_return
+            return v === true || v === 'true' || v === 'True' || v === 1 || v === '1'
+        },
+        
+        // 提交审批（与流程列表页审批弹窗提交逻辑一致）
+        handleApproveSubmit() {
+            let vm = this
+            
+            // 验证：驳回和退回时必须填写审批意见
+            if (vm.approveForm.approve_result === 2 || vm.approveForm.approve_result === 3) {
+                if (!vm.approveForm.approve_comment || vm.approveForm.approve_comment.trim() === '') {
+                    vm.$message.warning('选择驳回或退回时，审批意见为必填项')
+                    return
+                }
+            }
+            
+            vm.approveLoading = true
+            
+            let apiCall = null
+            if (vm.approveForm.approve_result === 1) {
+                apiCall = workflowTaskApprove(vm.currentTask.id, vm.approveForm)
+            } else if (vm.approveForm.approve_result === 2) {
+                apiCall = workflowTaskReject(vm.currentTask.id, vm.approveForm)
+            } else if (vm.approveForm.approve_result === 3) {
+                apiCall = workflowTaskReturn(vm.currentTask.id, vm.approveForm)
+            }
+            
+            apiCall.then(res => {
+                vm.approveLoading = false
+                if (res.code === 2000) {
+                    vm.$message.success('审批成功')
+                    vm.approveDialogVisible = false
+                    vm.getData()
+                } else {
+                    vm.$message.error(res.msg || '审批失败')
+                    // 即使失败也关闭对话框并刷新数据（避免重复操作）
+                    vm.approveDialogVisible = false
+                    vm.getData()
+                }
+            }).catch(err => {
+                vm.approveLoading = false
+                vm.$message.error('审批失败')
+                // 异常情况下也关闭对话框并刷新数据
+                vm.approveDialogVisible = false
+                vm.getData()
+            })
+        },
+        
+        // 退回待办重新提交：跳转到流程列表页并自动打开重新提交弹窗
+        resubmitTask(row) {
+            let vm = this
+            const instanceId = row.instance
+            if (!instanceId) {
+                vm.$message.warning('未获取到对应的流程实例信息')
+                return
+            }
+            vm.$router.push({ path: '/workflowList', query: { resubmit_instance: instanceId } })
+        },
+        
+        // 查看流程详情：打开公共详情弹窗（与流程列表/我的已办展示一致）
         viewWorkflowDetail(row) {
             let vm = this
-            // 打开流程列表页并跳转到该流程详情
-            const routeData = vm.$router.resolve({ path: '/workflowList' })
-            window.open(routeData.href, '_blank')
+            const instanceId = row.instance
+            if (!instanceId) {
+                vm.$message.warning('未获取到对应的流程实例信息')
+                return
+            }
+            vm.detailInstanceId = instanceId
+            vm.detailDialogVisible = true
         },
         
         // 批量审批
