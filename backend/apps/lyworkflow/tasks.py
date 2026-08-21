@@ -101,6 +101,7 @@ def _send_workflow_email_notification(user, instance, notification_type):
             logger.info(f'准备发送邮件通知：收件人={recipient_email}，流程={instance.instance_no}，类型={notification_type}')
 
         approval_url = get_workflow_approval_url(instance.id)
+        view_url = get_workflow_view_url(instance.id)
         applicant_name = instance.applicant.name if getattr(instance, 'applicant', None) else '未知'
         create_time_str = instance.create_datetime.strftime('%Y-%m-%d %H:%M:%S') if instance.create_datetime else '未知'
 
@@ -305,6 +306,7 @@ def _send_workflow_email_notification(user, instance, notification_type):
                     body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
                     .header {{ background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
                     .info {{ background-color: #f5f5f5; padding: 15px; border-radius: 5px; }}
+                    .button {{ display: inline-block; padding: 10px 20px; background-color: #2196f3; color: white; text-decoration: none; border-radius: 5px; margin-top: 15px; }}
                 </style>
             </head>
             <body>
@@ -317,6 +319,7 @@ def _send_workflow_email_notification(user, instance, notification_type):
                     <p><strong>流程编号：</strong>{instance.instance_no}</p>
                     <p><strong>申请人：</strong>{applicant_name}</p>
                 </div>
+                <a href="{view_url}" class="button">查看流程</a>
                 <p style="color: #666; margin-top: 20px; font-size: 12px;">此邮件为系统自动发送，请勿直接回复。</p>
             </body>
             </html>
@@ -329,6 +332,8 @@ def _send_workflow_email_notification(user, instance, notification_type):
 流程标题：{instance.title}
 流程编号：{instance.instance_no}
 申请人：{applicant_name}
+
+请点击以下链接查看流程：{view_url}
 
 此邮件为系统自动发送，请勿直接回复。
             """

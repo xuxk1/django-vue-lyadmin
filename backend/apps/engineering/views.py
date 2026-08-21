@@ -6,6 +6,7 @@ import threading
 import time
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import django_filters
 from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Q
@@ -41,10 +42,33 @@ AUTO_FILL_VALUE_PROVIDERS = {
 }
 
 
+class PackageBuildFilter(django_filters.FilterSet):
+    """打包构建列表筛选：项目名称模糊匹配，构建状态/扫描状态精确匹配
+
+    使用显式 FilterSet 而非 filterset_fields：AutoFilterSet 分支会直接按原始参数
+    构造 Q 条件，构建状态（数值字段）传空串会触发字段类型转换错误；
+    django-filter 原生对空值自动跳过过滤，无需前端剔除空参数。
+    """
+    project_name = django_filters.CharFilter(field_name='project_name', lookup_expr='icontains')
+    build_status = django_filters.NumberFilter(field_name='build_status')
+    scan_status = django_filters.CharFilter(method='filter_scan_status')
+
+    def filter_scan_status(self, queryset, name, value):
+        # 未扫描：scan_status 为空（NULL 或空串）的记录；其余取值精确匹配（PASS/FAIL/REJECT/ERROR/SCANNING）
+        if value == '__empty__':
+            return queryset.filter(Q(scan_status__isnull=True) | Q(scan_status=''))
+        return queryset.filter(scan_status=value)
+
+    class Meta:
+        model = PackageBuild
+        fields = ['project_name', 'build_status', 'scan_status']
+
+
 class PackageBuildViewSet(CustomModelViewSet):
     """打包构建视图集"""
     queryset = PackageBuild.objects.all()
     serializer_class = PackageBuildSerializer
+    filterset_class = PackageBuildFilter
     search_fields = ['project_name', 'jenkins_job_name']
     ordering_fields = ['create_datetime']
     # 不需要数据权限过滤

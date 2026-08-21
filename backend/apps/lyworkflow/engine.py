@@ -738,7 +738,8 @@ class FlowEngine:
         # 处理节点级抄送人（普通审批节点也可以配置抄送人）
         self._handle_step_cc_users(step)
         
-        # 处理发起人确认节点的产品线抄送逻辑
+        # 处理发起人确认节点的产品线抄送逻辑（仅创建抄送记录，
+        # 抄送通知已取消避免与确认通知重复；发起人确认后由 confirm 接口统一发送确认通知）
         if step.approver_type == 7 and step.product_line_cc_rules:
             self._handle_product_line_cc(step)
 
@@ -1058,7 +1059,10 @@ class FlowEngine:
         """处理发起人确认节点的产品线抄送逻辑
         
         当发起人确认节点(approver_type=7)配置了product_line_cc_rules时，
-        根据已完成的产品线节点确定抄送人。
+        根据已完成的产品线节点确定抄送人，并创建抄送记录。
+        
+        注意：本方法仅创建抄送记录、不发送任何通知（抄送通知邮件已取消，
+        避免与确认通知重复）；发起人点击确认后由 confirm 接口统一发送确认通知。
         """
         if not step.product_line_cc_rules:
             return
@@ -1085,30 +1089,61 @@ class FlowEngine:
             logger.warning(f'产品线 {product_line} 的抄送规则未获取到人员')
             return
         
-        # 创建抄送记录并发送通知
-        for user in cc_users:
+        # 防重复创建：同一实例同一节点已创建过的抄送记录不再重复创建
+        # （退回重提、确认接口补触发等场景下会再次进入本方法）
+        existing_cc_user_ids = set(WorkflowCCInstance.objects.filter(
+            instance=self.instance, step=step
+        ).values_list('cc_user_id', flat=True))
+        new_cc_users = [u for u in cc_users if u.id not in existing_cc_user_ids]
+        if not new_cc_users:
+            logger.info(f'步骤 {step.step_name} 的产品线抄送记录已存在，跳过重复创建')
+            return
+        
+        # 仅创建抄送记录，不发送通知（抄送通知已取消，确认时由 confirm 接口统一通知）
+        for user in new_cc_users:
             WorkflowCCInstance.objects.create(
                 instance=self.instance,
                 cc_user=user,
                 step=step
             )
             logger.info(f'已创建产品线抄送记录: {user.name} -> {step.step_name} (产品线: {product_line})')
-        
-        self._batch_send_notifications(cc_users, 'cc', f'产品线抄送({product_line}): {step.step_name}', step=step)
+        logger.info(f'步骤 {step.step_name} 已创建 {len(new_cc_users)} 条产品线抄送记录，等待发起人确认后由 confirm 接口通知')
     
     def _get_completed_product_line(self, current_step: WorkflowStep):
-        """从已完成的任务中查找产品线节点
+        """确定流程当前的产品线标识
         
-        查找当前步骤之前已完成（status=1）的、配置了product_line的节点
+        优先从流程实例 form_data 中读取产品线字段（发起人在申请表单中选择/填写，
+        如 D 包流程的 product_line 字段），兼容旧逻辑：
+        查找当前步骤之前已完成（status=1）的、配置了 product_line 的节点。
         """
-        # 获取当前步骤之前已完成的任务
+        # 方案一：从 form_data 读取产品线（发起人在申请表单中选择/填写）
+        try:
+            import json
+            form_data = self.instance.form_data
+            if isinstance(form_data, str):
+                try:
+                    form_data = json.loads(form_data) or {}
+                except (TypeError, ValueError):
+                    form_data = {}
+            product_line = (form_data or {}).get('product_line', '')
+            if product_line:
+                # 兼容值为列表的情况（多选产品线时取第一个）
+                if isinstance(product_line, list):
+                    product_line = product_line[0] if product_line else ''
+                product_line = str(product_line).strip()
+                if product_line:
+                    logger.info(f'从流程表单获取产品线: {product_line}')
+                    return product_line
+        except Exception as e:
+            logger.warning(f'从流程表单读取产品线失败: {str(e)}')
+        
+        # 方案二（兼容旧逻辑）：查找当前步骤之前已完成的任务中配置了 product_line 的节点
         completed_tasks = WorkflowTask.objects.filter(
             instance=self.instance,
             status=1,  # 已通过
             step_order__lt=current_step.step_order
         ).select_related('step')
         
-        # 查找配置了product_line的已完成步骤
         for task in completed_tasks:
             if task.step.product_line:
                 logger.info(f'找到已完成的产品线节点: {task.step.step_name}, product_line={task.step.product_line}')
@@ -1117,7 +1152,7 @@ class FlowEngine:
         return None
     
     def _match_product_line_cc_rule(self, cc_rules, product_line):
-        """根据产品线匹配抄送规则
+        """根据产品线匹配抄送规则（大小写不敏感，表单值如 'rc' 可匹配规则中的 'RC'）
         
         Args:
             cc_rules: 产品线抄送规则列表
@@ -1137,8 +1172,10 @@ class FlowEngine:
         if not isinstance(cc_rules, list):
             return None
         
+        normalized = str(product_line or '').strip().upper()
         for rule in cc_rules:
-            if rule.get('product_line') == product_line:
+            rule_line = str(rule.get('product_line', '') or '').strip().upper()
+            if rule_line and rule_line == normalized:
                 return rule
         
         return None

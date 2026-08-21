@@ -343,6 +343,8 @@ def _retry_scan_with_new_build(self, jenkins, job_name, package_path, workflow_i
 
     以原软件包路径重新触发 package_security_scan 构建，投递新任务异步等待新构建
     结束后重新读取结果（重试计数 +1，旧构建不再轮询）。
+    仅手动创建审批流场景会走到（打包管理自动发包链路投递时 package_path 为空，
+    调用方先按 package_path 判空跳过重试，直接回填 ERROR）。
 
     Args:
         self: Celery 任务实例（触发接口异常时基于 request.kwargs 补全参数后 self.retry 重跑）
@@ -404,7 +406,8 @@ def run_package_security_scan(self, workflow_instance_id, package_path=None, job
         scan_fail_retries: 已重新触发扫描构建的次数。构建结束后 ScanStatus/ScanReport 读取失败或
             为空（构建失败必然读不到，构建成功时结果也可能尚未生成/缺失）时，以原软件包路径重新
             触发扫描构建并异步等待新构建结束，最多 PACKAGE_SCAN_FAIL_MAX_RETRIES 次，重试耗尽
-            仍失败则回填 ERROR + 缺省默认报告，不阻塞审批流程
+            仍失败则回填 ERROR + 缺省默认报告，不阻塞审批流程；打包管理自动发包链路 package_path
+            为空不做重试（读取失败直接回填 ERROR）
     """
     from apps.lyworkflow.models import WorkflowInstance
     from utils.jenkins_service import JenkinsService
@@ -504,8 +507,8 @@ def run_package_security_scan(self, workflow_instance_id, package_path=None, job
         raise self.retry(countdown=30)
 
     # 构建结束：读取 package_info 中的 ScanStatus=/ScanReport=，并获取报告 html 内容。
-    # 注意：构建失败时必然读不到结果，构建成功时结果也可能尚未生成/缺失——不区分构建成功失败，
-    # 统一以"能否读到 ScanStatus/ScanReport"为判据，读不到一律重新触发扫描构建（见下方"扫描结果不完整"分支）
+    # 构建失败时必然读不到结果，构建成功时结果也可能尚未生成/缺失——以 ScanStatus 是否为空为判据：
+    # 为空时直接回填默认值 ERROR + 缺省报告，不做重试
     from apps.engineering.views import PackageBuildViewSet
 
     scan_info = {
@@ -536,9 +539,10 @@ def run_package_security_scan(self, workflow_instance_id, package_path=None, job
         logger.warning(f'包扫描任务读取扫描结果失败: {str(e)}')
 
     # 扫描结果不完整（接口异常或 ScanStatus/ScanReport 为空）是唯一失败判据：构建失败必然读不到结果，
-    # 构建成功时结果也可能尚未生成/缺失——两种情况统一重新触发扫描构建、异步等待新构建结束后重新
-    # 读取，最多 PACKAGE_SCAN_FAIL_MAX_RETRIES 次；重试耗尽仍无法读取时回填 ERROR + 缺省默认报告，
-    # 提示用户报告获取异常，不影响审批流程
+    # 构建成功时结果也可能尚未生成/缺失——手动创建审批流（package_path 非空）统一重新触发扫描构建、
+    # 异步等待新构建结束后重新读取，最多 PACKAGE_SCAN_FAIL_MAX_RETRIES 次；打包管理自动发包链路
+    # （package_path 为空）不做重试；重试耗尽仍无法读取时回填 ERROR + 缺省默认报告，提示用户报告
+    # 获取异常，不影响审批流程（ERROR 不影响"包扫描状态为PASS"跳过逻辑）
     if scan_read_error or not scan_info.get('package_scan_status') or not scan_info.get('package_scan_report'):
         if scan_fail_retries < PACKAGE_SCAN_FAIL_MAX_RETRIES and package_path:
             _retry_scan_with_new_build(
@@ -564,13 +568,13 @@ def run_package_security_scan(self, workflow_instance_id, package_path=None, job
             # form_data 可能存在双重 JSON 编码（字符串），先反序列化保证 .get() 安全
             form_data = PackageBuildViewSet._parse_form_data(locked.form_data)
             form_data = PackageBuildViewSet._fill_scan_values(form_data, scan_info)
-            # 扫描状态为空视为扫描失败，回填 FAIL 关闭"等待扫描"状态（否则通知会一直被延后）
+            # 扫描状态为空视为扫描失败，回填 ERROR 关闭"等待扫描"状态（否则通知会一直被延后）
             if not str(scan_info.get('package_scan_status') or '').strip():
-                form_data[PACKAGE_SCAN_STATUS_FIELD] = 'FAIL'
+                form_data[PACKAGE_SCAN_STATUS_FIELD] = PACKAGE_SCAN_ERROR_STATUS
             locked.form_data = form_data
             locked.save(update_fields=['form_data'])
             # 同步更新关联打包构建记录的扫描状态（列表页展示）
-            _update_scan_status(locked, scan_info['package_scan_status'] or 'FAIL', package_build_id)
+            _update_scan_status(locked, scan_info['package_scan_status'] or PACKAGE_SCAN_ERROR_STATUS, package_build_id)
     except WorkflowInstance.DoesNotExist:
         logger.error(f'包扫描任务终止：流程实例不存在 workflow_instance_id={workflow_instance_id}')
         return

@@ -15,6 +15,16 @@
                         </el-option>
                     </el-select>
                 </el-form-item>
+                <el-form-item label="扫描状态：">
+                    <el-select v-model="formInline.scan_status" placeholder="请选择" clearable @change="search" size="default" style="width:120px">
+                        <el-option
+                            v-for="item in scanStatusList"
+                            :key="item.id"
+                            :label="item.name"
+                            :value="item.id">
+                        </el-option>
+                    </el-select>
+                </el-form-item>
                 <el-form-item label=""><el-button @click="search" type="primary" icon="Search" v-show="hasPermission(this.$route.name,'Search')">查询</el-button></el-form-item>
                 <el-form-item label=""><el-button @click="handleEdit('','reset')" icon="Refresh">重置</el-button></el-form-item>
                 <el-form-item label="" v-show="hasPermission(this.$route.name,'Create')">
@@ -50,9 +60,12 @@
                 </el-table-column>
                 <el-table-column min-width="110" label="包扫描状态">
                     <template #default="scope">
-                        <el-tag v-if="scope.row.scan_status === 'PASS'" type="success">PASS</el-tag>
+                        <!-- 构建未成功（构建中/失败/未构建）时扫描尚未开始，统一显示未扫描；
+                             业务扫描状态无 FAIL，只有 PASS/REJECT/WARN/ERROR/SCANNING/未扫描 -->
+                        <span v-if="scope.row.build_status !== 1" style="color: #C0C4CC;">未扫描</span>
+                        <el-tag v-else-if="scope.row.scan_status === 'PASS'" type="success">PASS</el-tag>
                         <el-tag v-else-if="scope.row.scan_status === 'REJECT'" type="danger">REJECT</el-tag>
-                        <el-tag v-else-if="scope.row.scan_status === 'FAIL'" type="danger">失败</el-tag>
+                        <el-tag v-else-if="scope.row.scan_status === 'WARN'" type="warning">WARN</el-tag>
                         <el-tag v-else-if="scope.row.scan_status === 'ERROR'" type="danger">ERROR</el-tag>
                         <el-tag v-else-if="scope.row.scan_status === 'SCANNING'" type="warning">扫描中</el-tag>
                         <span v-else style="color: #C0C4CC;">未扫描</span>
@@ -358,7 +371,8 @@
                     page: 1,
                     limit: 10,
                     project_name:'',
-                    build_status:''
+                    build_status:'',
+                    scan_status:''
                 },
                 pageparm: {
                     page: 1,
@@ -371,6 +385,15 @@
                     {id:1,name:'成功'},
                     {id:2,name:'失败'},
                     {id:3,name:'未构建'},
+                ],
+                // 包扫描状态筛选（__empty__ 表示未扫描，后端按 scan_status 为空过滤）
+                scanStatusList:[
+                    {id:'PASS',name:'PASS'},
+                    {id:'REJECT',name:'REJECT'},
+                    {id:'WARN',name:'WARN'},
+                    {id:'ERROR',name:'ERROR'},
+                    {id:'SCANNING',name:'扫描中'},
+                    {id:'__empty__',name:'未扫描'},
                 ],
                 // 同步按钮
                 syncLoading: false,
@@ -813,7 +836,8 @@
                         page:1,
                         limit: 10,
                         project_name:'',
-                        build_status:''
+                        build_status:'',
+                        scan_status:''
                     }
                     this.pageparm={
                         page: 1,

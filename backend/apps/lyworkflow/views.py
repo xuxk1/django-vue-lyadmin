@@ -1202,6 +1202,15 @@ class WorkflowTaskViewSet(CustomModelViewSet):
                 operator=request.user
             )
             
+            # 确保产品线抄送记录已创建（兼容存量流程：修复前已流转到确认节点、
+            # 但抄送记录未生成的实例；已存在的记录会被引擎幂等跳过。
+            # 注：抄送通知已取消，此处仅确保记录存在，供下方确认通知查询抄送人）
+            try:
+                if task.step and task.step.approver_type == 7 and task.step.product_line_cc_rules:
+                    engine._handle_product_line_cc(task.step)
+            except Exception as e:
+                logger.warning(f'处理产品线抄送失败: {str(e)}')
+            
             # 确认后给所有抄送人发送通知（站内消息 + 邮件）
             cc_users = WorkflowCCInstance.objects.filter(
                 instance=task.instance
